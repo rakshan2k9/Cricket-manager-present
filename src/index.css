@@ -1,0 +1,440 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Oswald", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #06090c;
+    background-image:
+      radial-gradient(
+        ellipse 62% 52% at 15% 18%,
+        rgba(116, 150, 168, 0.17) 0%,
+        rgba(58, 88, 102, 0.08) 44%,
+        transparent 74%
+      ),
+      radial-gradient(
+        ellipse 66% 58% at 76% 48%,
+        rgba(34, 92, 72, 0.24) 0%,
+        rgba(20, 58, 48, 0.13) 44%,
+        transparent 76%
+      ),
+      radial-gradient(
+        ellipse 52% 46% at 24% 88%,
+        rgba(34, 72, 68, 0.15) 0%,
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 115% 105% at 50% 45%,
+        transparent 48%,
+        rgba(2, 4, 7, 0.78) 100%
+      );
+    background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+    background-attachment: fixed;
+    color: #e6ebf2;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-condensed {
+  font-family: "Oswald", system-ui, sans-serif;
+}
+
+/* Unified CM27 dark translucent frosted glass panels matching the CM27 video */
+.cm27-panel {
+  background-color: rgba(14, 18, 24, 0.74);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 8px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 14px 36px rgba(0, 0, 0, 0.42);
+  transition:
+    border-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cm27-panel-inset {
+  background-color: rgba(8, 11, 16, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.42);
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+
+.cm27-hub-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.cm27-hub-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(226, 232, 240, 0.22), transparent);
+  opacity: 0;
+  transition: opacity 220ms ease;
+  pointer-events: none;
+}
+
+.cm27-hub-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(226, 232, 240, 0.28);
+  background-color: rgba(18, 23, 30, 0.84);
+}
+
+.cm27-hub-card:hover::after {
+  opacity: 1;
+}
+
+.cm27-pill-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.45rem 1.05rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #dbe4ef;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cm27-hub-card:hover .cm27-pill-cta,
+.cm27-pill-cta:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(226, 232, 240, 0.45);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+/* 3D textured keycap badge */
+.cm27-keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom-color: rgba(0, 0, 0, 0.7);
+  background: linear-gradient(180deg, #212733 0%, #141820 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.35);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: #dbe3ee;
+  line-height: 1.2;
+}
+
+/* Primary CM27 3D Textured Bevel Button (matches Reference Video) */
+.cm27-btn-3d {
+  background: linear-gradient(180deg, #b8c2d0 0%, #8e99aa 100%);
+  color: #0b0e14;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-bottom-color: rgba(15, 23, 42, 0.85);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -2px 0 rgba(15, 23, 42, 0.36),
+    0 4px 14px rgba(0, 0, 0, 0.44);
+  transition: transform 150ms cubic-bezier(0.16, 1, 0.3, 1), filter 150ms ease, box-shadow 150ms ease;
+}
+
+.cm27-btn-3d:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -2px 0 rgba(15, 23, 42, 0.38),
+    0 8px 20px rgba(0, 0, 0, 0.5);
+}
+
+.cm27-btn-3d:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.35),
+    0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* Dark Slate 3D Textured Secondary Button */
+.cm27-btn-dark-3d {
+  background: linear-gradient(180deg, #212733 0%, #151a22 100%);
+  color: #e5ebf3;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-top-color: rgba(255, 255, 255, 0.24);
+  border-bottom-color: rgba(0, 0, 0, 0.75);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.52),
+    0 3px 8px rgba(0, 0, 0, 0.38);
+  transition: transform 150ms cubic-bezier(0.16, 1, 0.3, 1), border-color 150ms ease, background 150ms ease;
+}
+
+.cm27-btn-dark-3d:hover:not(:disabled) {
+  background: linear-gradient(180deg, #28303e 0%, #1a202a 100%);
+  border-color: rgba(226, 232, 240, 0.36);
+  transform: translateY(-1px);
+}
+
+.cm27-btn-dark-3d:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+/* Focused/Selected Card Illumination (matches Video highlights) */
+.cm27-card-focus {
+  border-color: rgba(226, 232, 240, 0.72) !important;
+  background: linear-gradient(180deg, rgba(28, 36, 46, 0.94) 0%, rgba(16, 21, 28, 0.94) 100%) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 26px rgba(147, 230, 238, 0.14) !important;
+}
+
+/* Signature CM27 horizontal lighting hover sweep */
+.cm27-hover-sweep {
+  position: relative;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cm27-hover-sweep::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(226, 232, 240, 0.12) 0%, rgba(147, 230, 238, 0.05) 45%, transparent 100%);
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+
+.cm27-hover-sweep:hover::before,
+.cm27-hover-sweep[data-active="true"]::before {
+  opacity: 1;
+}
+
+.cm27-hover-bar {
+  position: relative;
+}
+
+.cm27-hover-bar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  background: #e2e8f0;
+  opacity: 0;
+  transform: scaleY(0.45);
+  transition: opacity 180ms ease, transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 2px;
+}
+
+.cm27-hover-bar:hover::after,
+.cm27-hover-bar[data-active="true"]::after {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.cm27-card-glow {
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 180ms ease;
+}
+
+.cm27-card-glow:hover {
+  border-color: rgba(226, 232, 240, 0.35);
+  transform: translateY(-1px);
+}
+
+/* Smooth CM27 view, directional slide, and staggered card entrances */
+@keyframes cm27-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.cm27-view-enter {
+  animation: cm27-enter 250ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes cm27-slide-right-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.cm27-slide-right {
+  animation: cm27-slide-right-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes cm27-card-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.cm27-stagger-1 { animation: cm27-card-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) 20ms both; }
+.cm27-stagger-2 { animation: cm27-card-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) 65ms both; }
+.cm27-stagger-3 { animation: cm27-card-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) 110ms both; }
+.cm27-stagger-4 { animation: cm27-card-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) 155ms both; }
+.cm27-stagger-5 { animation: cm27-card-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) 200ms both; }
+.cm27-stagger-6 { animation: cm27-card-rise 280ms cubic-bezier(0.16, 1, 0.3, 1) 245ms both; }
+
+@keyframes cm27-underline-expand {
+  from {
+    transform: scaleX(0.35);
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+.cm27-nav-underline {
+  animation: cm27-underline-expand 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: center;
+}
+
+.cm27-bar-fill {
+  transition: width 550ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cm27-ring-stroke {
+  transition: stroke-dashoffset 650ms cubic-bezier(0.16, 1, 0.3, 1), stroke-dasharray 650ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes cm27-transit-float {
+  0%, 100% {
+    transform: translateY(0px);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.cm27-transit-float {
+  animation: cm27-transit-float 2.2s ease-in-out infinite;
+}
+
+@keyframes cm27-toast-slide {
+  from {
+    opacity: 0;
+    transform: translateX(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.cm27-toast-in {
+  animation: cm27-toast-slide 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Gentle animated underline for CM27 Loading Screen */
+@keyframes cm27-gold-sweep {
+  0% {
+    transform: scaleX(0.32);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(0.32);
+    opacity: 0.72;
+  }
+}
+
+.animate-cm27-gold-line {
+  animation: cm27-gold-sweep 2.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes cm27-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.animate-cm27-progress {
+  animation: cm27-progress 1.6s ease-in-out infinite;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0c0f14;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #232a35;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #333d4c;
+}

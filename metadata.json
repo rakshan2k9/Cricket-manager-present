@@ -1,0 +1,6 @@
+{
+  "name": "Cricket Dynasty",
+  "description": "Multiplayer cricket management simulation featuring private leagues, live player auctions, custom franchise selection, and deep squad analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
