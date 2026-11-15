@@ -53,12 +53,20 @@ import {
 import {
   computeLeagueCalendar,
   computeLeagueStandings,
+  computeTeamProgressions,
   ensureLeagueScheduleExists,
+  getTeamRecentFormMap,
   maybeAdvancePlayoffs,
-  processDueAiFixtures,
+  recalculateNextAutoSimAt,
   simulateScheduledFixtureWithSavedTactics,
   startPvpMatchLiveState,
+  syncLeagueDayProgression,
 } from './scheduleEngine.ts';
+import {
+  formatAutoSimIntervalLabel,
+  isValidAutoSimIntervalSec,
+  normalizeAutoSimIntervalSec,
+} from '../utils/format.ts';
 import { applyPostMatchProgression } from './postMatchService.ts';
 import {
   buildPressQuoteText,
@@ -202,8 +210,7 @@ async function buildLeagueState(leagueId: number, viewerUid: string) {
     .limit(40);
 
   await ensureLeagueScheduleExists(leagueId);
-  const calendar = computeLeagueCalendar(league);
-  await processDueAiFixtures(leagueId, calendar.currentGameDay);
+  const calendar = await syncLeagueDayProgression(leagueId);
 
   const matchRows = await db
     .select()
@@ -288,9 +295,25 @@ async function buildLeagueState(leagueId: number, viewerUid: string) {
     };
   });
 
+  const myTeam = enrichedTeams.find((t) => t.ownerUid === viewerUid) ?? null;
+  const teamProgressions = computeTeamProgressions(
+    teamRows,
+    fixtureRows,
+    calendar.currentGameDay
+  );
+  const myProgression = myTeam
+    ? teamProgressions.find((p) => p.teamId === myTeam.id) ?? null
+    : null;
+
   return {
     league: {
       ...league,
+      dayDurationSec: calendar.dayDurationSec,
+      dayStartedAt: calendar.dayStartedAt,
+      nextAutoSimAt: calendar.nextAutoSimAt,
+      inactivitySimEnabled: calendar.inactivitySimEnabled,
+      inactivityTimeoutSec: calendar.inactivityTimeoutSec,
+      dayPausedForHumanMatch: calendar.dayPausedForHumanMatch,
       currentGameDay: calendar.currentGameDay,
       nextDayInSec: calendar.nextDayInSec,
     },
@@ -299,7 +322,7 @@ async function buildLeagueState(leagueId: number, viewerUid: string) {
       isOnline: onlineUids.has(m.userUid),
     })),
     teams: enrichedTeams,
-    myTeam: enrichedTeams.find((t) => t.ownerUid === viewerUid) ?? null,
+    myTeam,
     auctionSnapshot,
     messages: messages.reverse(),
     notifications: notifRows,
@@ -310,6 +333,13 @@ async function buildLeagueState(leagueId: number, viewerUid: string) {
     tradeOffers: enrichedTrades,
     currentGameDay: calendar.currentGameDay,
     nextDayInSec: calendar.nextDayInSec,
+    dayStartedAt: calendar.dayStartedAt,
+    nextAutoSimAt: calendar.nextAutoSimAt,
+    inactivitySimEnabled: calendar.inactivitySimEnabled,
+    inactivityTimeoutSec: calendar.inactivityTimeoutSec,
+    dayPausedForHumanMatch: calendar.dayPausedForHumanMatch,
+    myProgression,
+    teamProgressions,
     onlineUids: Array.from(onlineUids),
   };
 }
@@ -444,7 +474,7 @@ apiRouter.post('/leagues', async (req: AuthRequest, res) => {
   try {
     if (!isDatabaseConfigured) {
       return res.status(503).json({
-        error: 'Cloud SQL database is not connected yet. Provision AI Studio Cloud SQL from the integrations menu to create and persist leagues.',
+        error: 'Database is not connected yet. Provision Firebase Firestore or Cloud SQL from the integrations menu to create and persist leagues.',
       });
     }
     const uid = req.user!.uid;
@@ -460,11 +490,25 @@ apiRouter.post('/leagues', async (req: AuthRequest, res) => {
       defaultBasePrice = 50,
       bidIncrement = 25,
       auctionDurationSec = 20,
+      dayDurationSec,
+      autoSimIntervalSec,
+      inactivitySimEnabled = false,
+      inactivityTimeoutSec = 86400,
     } = req.body;
 
     if (!name || typeof name !== 'string' || name.trim().length < 3) {
       return res.status(400).json({ error: 'League name must be at least 3 characters.' });
     }
+
+    const rawInterval = autoSimIntervalSec ?? dayDurationSec;
+    if (rawInterval !== undefined && rawInterval !== null && !isValidAutoSimIntervalSec(rawInterval)) {
+      return res.status(400).json({
+        error: 'Invalid auto-simulation interval. Choose one of the allowed calendar intervals (5 minutes to 24 hours).',
+      });
+    }
+    const resolvedDayDurationSec = normalizeAutoSimIntervalSec(rawInterval);
+    const resolvedInactivityEnabled = Boolean(inactivitySimEnabled);
+    const resolvedInactivityTimeoutSec = Math.max(3600, Math.min(604800, Number(inactivityTimeoutSec) || 86400));
 
     const validCompetitions = [
       'IPL',
@@ -504,6 +548,7 @@ apiRouter.post('/leagues', async (req: AuthRequest, res) => {
         inviteCode = generateInviteCode();
       }
 
+      const now = new Date();
       const [league] = await tx
         .insert(leagues)
         .values({
@@ -521,6 +566,12 @@ apiRouter.post('/leagues', async (req: AuthRequest, res) => {
           defaultBasePrice: clampedBase,
           bidIncrement: clampedIncrement,
           auctionDurationSec: clampedDuration,
+          dayDurationSec: resolvedDayDurationSec,
+          currentGameDay: 1,
+          dayStartedAt: now,
+          nextAutoSimAt: new Date(now.getTime() + resolvedDayDurationSec * 1000),
+          inactivitySimEnabled: resolvedInactivityEnabled,
+          inactivityTimeoutSec: resolvedInactivityTimeoutSec,
           status: 'setup',
         })
         .returning();
@@ -739,6 +790,103 @@ apiRouter.post('/leagues/join', async (req: AuthRequest, res) => {
     if (msg.startsWith('FULL:')) return res.status(409).json({ error: msg.slice(5) });
     console.error('Join league error:', error);
     res.status(500).json({ error: 'Failed to join league' });
+  }
+});
+
+apiRouter.patch('/leagues/:leagueId/settings', async (req: AuthRequest, res) => {
+  try {
+    if (!isDatabaseConfigured) {
+      return res.status(503).json({ error: 'Database not configured.' });
+    }
+    const leagueId = Number(req.params.leagueId);
+    const uid = req.user!.uid;
+    const member = await assertLeagueMember(leagueId, uid);
+    if (!member) return res.status(403).json({ error: 'Not a member of this league.' });
+
+    const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+    if (!league) return res.status(404).json({ error: 'League not found.' });
+
+    if (league.hostUid !== uid && member.role !== 'host') {
+      return res.status(403).json({
+        error: 'Only the league creator or authorized host can modify league auto-simulation settings.',
+      });
+    }
+
+    const { dayDurationSec, autoSimIntervalSec, inactivitySimEnabled, inactivityTimeoutSec } = req.body || {};
+    const rawInterval = autoSimIntervalSec ?? dayDurationSec;
+    let nextDurationSec = Math.max(60, league.dayDurationSec || 600);
+    if (rawInterval !== undefined && rawInterval !== null) {
+      if (!isValidAutoSimIntervalSec(rawInterval)) {
+        return res.status(400).json({
+          error: 'Invalid auto-simulation interval. Allowed presets range from 5 minutes to 24 hours.',
+        });
+      }
+      nextDurationSec = normalizeAutoSimIntervalSec(rawInterval);
+    }
+
+    const nextInactivityEnabled =
+      inactivitySimEnabled !== undefined
+        ? Boolean(inactivitySimEnabled)
+        : Boolean((league as any).inactivitySimEnabled);
+    const nextInactivityTimeoutSec =
+      inactivityTimeoutSec !== undefined
+        ? Math.max(3600, Math.min(604800, Number(inactivityTimeoutSec) || 86400))
+        : Math.max(3600, Number((league as any).inactivityTimeoutSec) || 86400);
+
+    const nowMs = Date.now();
+    const dayStartMs = new Date((league as any).dayStartedAt || league.seasonStartedAt || nowMs).getTime();
+    const nextAutoSimMs = recalculateNextAutoSimAt({
+      nowMs,
+      dayStartedAtMs: Number.isFinite(dayStartMs) ? dayStartMs : nowMs,
+      newIntervalSec: nextDurationSec,
+    });
+
+    const [updatedLeague] = await db
+      .update(leagues)
+      .set({
+        dayDurationSec: nextDurationSec,
+        nextAutoSimAt: new Date(nextAutoSimMs),
+        inactivitySimEnabled: nextInactivityEnabled,
+        inactivityTimeoutSec: nextInactivityTimeoutSec,
+      })
+      .where(eq(leagues.id, leagueId))
+      .returning();
+
+    const intervalLabel = formatAutoSimIntervalLabel(nextDurationSec);
+    const [sysMsg] = await db
+      .insert(leagueMessages)
+      .values({
+        leagueId,
+        userUid: uid,
+        teamShortCode: 'HQ',
+        body: `Host updated Real-World Auto-Simulation Interval to ${intervalLabel}${nextInactivityEnabled ? ' (Abandoned fixture auto-sim ON)' : ''}. Current Global Day (${updatedLeague.currentGameDay}) preserved.`,
+        messageType: 'system',
+      })
+      .returning();
+
+    const state = await buildLeagueState(leagueId, uid);
+    if (state) {
+      wsHub.broadcastToLeague(leagueId, 'league:updated', {
+        league: state.league,
+        currentGameDay: state.currentGameDay,
+        dayDurationSec: nextDurationSec,
+        dayStartedAt: state.dayStartedAt,
+        nextAutoSimAt: state.nextAutoSimAt,
+        nextDayInSec: state.nextDayInSec,
+        inactivitySimEnabled: nextInactivityEnabled,
+        inactivityTimeoutSec: nextInactivityTimeoutSec,
+      });
+    }
+    if (sysMsg) wsHub.broadcastToLeague(leagueId, 'chat:message', sysMsg);
+
+    res.json({
+      ok: true,
+      league: state?.league || updatedLeague,
+      state,
+    });
+  } catch (error: any) {
+    console.error('Update league settings error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update league settings' });
   }
 });
 
@@ -1147,17 +1295,19 @@ apiRouter.get('/leagues/:leagueId/players', async (req: AuthRequest, res) => {
     }));
 
     const countryRows = await db
-      .selectDistinct({ country: players.country })
+      .select({ country: players.country })
       .from(players)
       .where(eq(players.leagueId, leagueId))
       .orderBy(asc(players.country));
+
+    const uniqueCountries = Array.from(new Set(countryRows.map((c) => c.country)));
 
     res.json({
       players: items,
       total,
       page,
       totalPages: Math.max(1, Math.ceil(total / limit)),
-      countries: countryRows.map((c) => c.country),
+      countries: uniqueCountries,
     });
   } catch (error: any) {
     console.error('List players error:', error);
@@ -2406,7 +2556,10 @@ apiRouter.get('/leagues/:leagueId/matches/preview', async (req: AuthRequest, res
 
     const homeRatings = computeTeamRatings(homeResolved.xi);
     const awayRatings = computeTeamRatings(awayResolved.xi);
-    const winChance = computeWinChance(homeRatings, awayRatings, format);
+    const formMap = await getTeamRecentFormMap(leagueId);
+    const homeForm = formMap.get(homeTeam.id) || [];
+    const awayForm = formMap.get(awayTeam.id) || [];
+    const winChance = computeWinChance(homeRatings, awayRatings, format, homeForm, awayForm);
 
     const pastMatches = await db
       .select()
@@ -2460,6 +2613,8 @@ apiRouter.get('/leagues/:leagueId/matches/preview', async (req: AuthRequest, res
       homeSquadAll: homeResolved.squadAll,
       homeRatings,
       awayRatings,
+      homeForm,
+      awayForm,
       winChance,
       headToHead: {
         played: pastMatches.length,
@@ -2558,6 +2713,9 @@ apiRouter.post('/leagues/:leagueId/matches/play', async (req: AuthRequest, res) 
 
     const cleanCall: 'heads' | 'tails' = userCall === 'tails' ? 'tails' : 'heads';
     const cleanDecision: 'bat' | 'bowl' = userDecisionIfWon === 'bowl' ? 'bowl' : 'bat';
+    const formMap = await getTeamRecentFormMap(leagueId);
+    const homeForm = formMap.get(homeTeam.id) || [];
+    const awayForm = formMap.get(awayTeam.id) || [];
 
     const summary =
       completedSummary &&
@@ -2575,6 +2733,8 @@ apiRouter.post('/leagues/:leagueId/matches/play', async (req: AuthRequest, res) 
             pitchCondition,
             userCall: cleanCall,
             userDecisionIfWon: cleanDecision,
+            homeForm,
+            awayForm,
           });
 
     const [savedMatch] = await db
@@ -2595,6 +2755,7 @@ apiRouter.post('/leagues/:leagueId/matches/play', async (req: AuthRequest, res) 
         winnerTeamId: summary.winnerTeamId,
         marginText: summary.marginText,
         resultSummaryJson: summary,
+        resolutionType: 'manual',
         createdByUid: uid,
       })
       .returning();
@@ -2606,6 +2767,7 @@ apiRouter.post('/leagues/:leagueId/matches/play', async (req: AuthRequest, res) 
         .set({
           status: 'completed',
           matchId: savedMatch.id,
+          resolutionType: 'manual',
           tossWinnerTeamId: summary.tossWinnerTeamId,
           tossDecision: summary.tossDecision,
           coinResult: summary.coinResult,
@@ -3490,7 +3652,18 @@ apiRouter.post('/leagues/:leagueId/auction/next', async (req: AuthRequest, res) 
                 updatedAt: new Date(),
               })
               .where(eq(auctions.id, fresh.id));
-            await tx.update(leagues).set({ status: 'active' }).where(eq(leagues.id, leagueId));
+            const intervalSec = Math.max(60, league.dayDurationSec || 600);
+            const startedAt = new Date();
+            await tx
+              .update(leagues)
+              .set({
+                status: 'active',
+                seasonStartedAt: startedAt,
+                currentGameDay: 1,
+                dayStartedAt: startedAt,
+                nextAutoSimAt: new Date(startedAt.getTime() + intervalSec * 1000),
+              })
+              .where(eq(leagues.id, leagueId));
           });
         } else {
           await db
@@ -3503,7 +3676,17 @@ apiRouter.post('/leagues/:leagueId/auction/next', async (req: AuthRequest, res) 
               updatedAt: new Date(),
             })
             .where(eq(auctions.id, fresh.id));
-          await db.update(leagues).set({ status: 'active' }).where(eq(leagues.id, leagueId));
+          const startedAt = new Date();
+          await db
+            .update(leagues)
+            .set({
+              status: 'active',
+              seasonStartedAt: startedAt,
+              currentGameDay: 1,
+              dayStartedAt: startedAt,
+              nextAutoSimAt: new Date(startedAt.getTime() + 600_000),
+            })
+            .where(eq(leagues.id, leagueId));
         }
       }
     }
@@ -3625,6 +3808,13 @@ apiRouter.post('/leagues/:leagueId/auction/auto-sim/vote', async (req: AuthReque
     const myTeam = claimedTeams.find((t) => t.ownerUid === uid);
     const managerName = profile?.managerName || 'Manager';
 
+    if (typeof req.body?.stopBuying === 'boolean' && myTeam) {
+      await db
+        .update(teams)
+        .set({ stopBuyingInAutoSim: Boolean(req.body.stopBuying) })
+        .where(eq(teams.id, myTeam.id));
+    }
+
     const existingVotes = Array.isArray(auction.autoSimVotesJson)
       ? auction.autoSimVotesJson.filter((v) => requiredSet.has(v.uid))
       : [];
@@ -3703,6 +3893,70 @@ apiRouter.post('/leagues/:leagueId/auction/auto-sim/vote', async (req: AuthReque
   } catch (error: any) {
     console.error('Auto-sim vote error:', error);
     res.status(500).json({ error: error.message || 'Failed to record auto-sim agreement' });
+  }
+});
+
+apiRouter.post('/leagues/:leagueId/auction/stop-buying', async (req: AuthRequest, res) => {
+  try {
+    const leagueId = Number(req.params.leagueId);
+    const uid = req.user!.uid;
+    const member = await assertLeagueMember(leagueId, uid);
+    if (!member) return res.status(403).json({ error: 'Not a member of this league.' });
+
+    const [myTeam] = await db
+      .select()
+      .from(teams)
+      .where(and(eq(teams.leagueId, leagueId), eq(teams.ownerUid, uid)))
+      .limit(1);
+    if (!myTeam) {
+      return res.status(404).json({ error: 'Claim a franchise first.' });
+    }
+
+    const stopBuying = Boolean(req.body?.stopBuying);
+    const [updatedTeam] = await db
+      .update(teams)
+      .set({ stopBuyingInAutoSim: stopBuying })
+      .where(eq(teams.id, myTeam.id))
+      .returning();
+
+    const state = await buildLeagueState(leagueId, uid);
+    wsHub.broadcastToLeague(leagueId, 'league:updated', { teams: state?.teams });
+    res.json({ ok: true, stopBuying, team: updatedTeam });
+  } catch (error: any) {
+    console.error('Toggle stopBuyingInAutoSim error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update auto-sim preference' });
+  }
+});
+
+apiRouter.post('/leagues/:leagueId/advance-day', async (req: AuthRequest, res) => {
+  try {
+    const leagueId = Number(req.params.leagueId);
+    const uid = req.user!.uid;
+    const member = await assertLeagueMember(leagueId, uid);
+    if (!member) return res.status(403).json({ error: 'Not a member of this league.' });
+
+    const calendar = await syncLeagueDayProgression(leagueId);
+    const state = await buildLeagueState(leagueId, uid);
+    if (state) {
+      wsHub.broadcastToLeague(leagueId, 'league:updated', {
+        currentGameDay: state.currentGameDay,
+        dayStartedAt: state.dayStartedAt,
+        nextAutoSimAt: state.nextAutoSimAt,
+        dayDurationSec: state.league?.dayDurationSec,
+        nextDayInSec: state.nextDayInSec,
+        dayPausedForHumanMatch: false,
+      });
+    }
+    res.json({
+      ok: true,
+      pausedForHumanMatch: false,
+      currentGameDay: calendar.currentGameDay,
+      nextAutoSimAt: calendar.nextAutoSimAt,
+      state,
+    });
+  } catch (error: any) {
+    console.error('Advance day error:', error);
+    res.status(500).json({ error: error.message || 'Failed to advance league day' });
   }
 });
 

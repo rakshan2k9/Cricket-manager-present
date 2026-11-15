@@ -6,7 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './src/server/routes.ts';
 import { wsHub } from './src/server/wsHub.ts';
 import { tickLiveAuctions } from './src/server/auctionEngine.ts';
-import { tickLivePvpFixtures } from './src/server/scheduleEngine.ts';
+import { tickGlobalLeagueCalendars, tickLivePvpFixtures } from './src/server/scheduleEngine.ts';
 
 async function startServer() {
   const app = express();
@@ -24,6 +24,12 @@ async function startServer() {
   wsHub.init(server, async () => {
     await tickLiveAuctions();
     await tickLivePvpFixtures();
+    await tickGlobalLeagueCalendars();
+  });
+
+  // Startup catch-up in case any auto-simulation intervals elapsed while offline
+  tickGlobalLeagueCalendars(true).catch((err) => {
+    console.error('Startup calendar catch-up error:', err);
   });
 
   if (process.env.NODE_ENV !== 'production') {

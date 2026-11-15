@@ -2804,9 +2804,18 @@ export function buildRealCricketPlayerPool(
     ([name, country, leagueOrigin, roleCode, tier, age, batHand, bowlType]) => {
       const role = roleMap[roleCode];
 
-      // Realistic CM27 OVR scaling (~52 to 89 max) based on career pedigree in league + current form
-      const baseMin = tier === 'L' ? 80 : tier === 'M' ? 71 : tier === 'S' ? 62 : 53;
-      const baseSpan = tier === 'L' ? 6 : tier === 'M' ? 7 : tier === 'S' ? 7 : 7;
+      // Realistic CM27 OVR scaling (~52 to 89 max): IPL & international marquee stars clearly outrank domestic-only players
+      const baseMin = tier === 'L' ? 83 : tier === 'M' ? 74 : tier === 'S' ? 64 : 54;
+      const baseSpan = tier === 'L' ? 5 : tier === 'M' ? 6 : tier === 'S' ? 6 : 6;
+      const isMarqueeStar = KNOWN_MARQUEE_STARS.has(name);
+      const isIplProven = leagueOrigin === 'IPL';
+      const pedigreeAdj = isMarqueeStar
+        ? 2
+        : isIplProven && (tier === 'L' || tier === 'M')
+          ? 2
+          : !isIplProven && tier !== 'L'
+            ? -3
+            : 0;
 
       const ageAdj = age >= 38 ? -2 : age >= 35 ? -1 : age <= 19 ? -1 : 0;
 
@@ -2815,26 +2824,35 @@ export function buildRealCricketPlayerPool(
       let fieldingRating = clamp(62 + (tier === 'L' ? 12 : tier === 'M' ? 7 : 0) + rand() * 14, 52, 89);
 
       if (role === 'Batsman') {
-        battingRating = clamp(baseMin + ageAdj + rand() * baseSpan, 50, 88);
+        battingRating = clamp(baseMin + pedigreeAdj + ageAdj + rand() * baseSpan, 50, 89);
         bowlingRating = clamp(18 + rand() * 28, 14, 52);
       } else if (role === 'Wicketkeeper') {
-        battingRating = clamp(baseMin - 1 + ageAdj + rand() * baseSpan, 50, 87);
+        battingRating = clamp(baseMin - 1 + pedigreeAdj + ageAdj + rand() * baseSpan, 50, 88);
         bowlingRating = clamp(12 + rand() * 10, 10, 26);
         fieldingRating = clamp(72 + (tier === 'L' ? 8 : 3) + rand() * 12, 65, 90);
       } else if (role === 'Bowler') {
         battingRating = clamp(22 + rand() * 28, 15, 56);
-        bowlingRating = clamp(baseMin + ageAdj + rand() * baseSpan, 50, 88);
+        bowlingRating = clamp(baseMin + pedigreeAdj + ageAdj + rand() * baseSpan, 50, 89);
       } else {
-        battingRating = clamp(baseMin - 2 + ageAdj + rand() * (baseSpan + 1), 49, 85);
-        bowlingRating = clamp(baseMin - 2 + ageAdj + rand() * (baseSpan + 1), 49, 85);
+        battingRating = clamp(baseMin - 2 + pedigreeAdj + ageAdj + rand() * (baseSpan + 1), 49, 86);
+        bowlingRating = clamp(baseMin - 2 + pedigreeAdj + ageAdj + rand() * (baseSpan + 1), 49, 86);
+      }
+
+      if (isMarqueeStar) {
+        if (role === 'Batsman' || role === 'Wicketkeeper') battingRating = Math.max(battingRating, 83);
+        else if (role === 'Bowler') bowlingRating = Math.max(bowlingRating, 83);
+        else {
+          battingRating = Math.max(battingRating, 80);
+          bowlingRating = Math.max(bowlingRating, 79);
+        }
       }
 
       const currentForm = clamp(
-        (tier === 'L' ? 64 : tier === 'M' ? 60 : tier === 'S' ? 56 : 54) + rand() * 30,
+        (tier === 'L' ? 66 : tier === 'M' ? 61 : tier === 'S' ? 56 : 54) + rand() * 28,
         46,
         92
       );
-      const formDelta = clamp(Math.round((currentForm - 70) / 8), -3, 3);
+      const formDelta = clamp(Math.round((currentForm - 70) / 10), -2, 2);
 
       const baseOvr =
         role === 'All-Rounder'
@@ -2847,7 +2865,12 @@ export function buildRealCricketPlayerPool(
             )
           : clamp(Math.max(battingRating, bowlingRating), 48, 89);
 
-      const overall = clamp(baseOvr + formDelta, 48, 90);
+      let overall = clamp(baseOvr + formDelta, 48, 90);
+      if (!isIplProven && !isMarqueeStar && tier !== 'L') {
+        overall = Math.min(overall, 79);
+        if (role === 'Batsman' || role === 'Wicketkeeper') battingRating = Math.min(battingRating, 79);
+        if (role === 'Bowler') bowlingRating = Math.min(bowlingRating, 79);
+      }
 
       const fitness = clamp(70 + (age <= 29 ? 8 : -2) + rand() * 18, 60, 95);
       const consistency = clamp(baseOvr - 4 + rand() * 9, 48, 90);

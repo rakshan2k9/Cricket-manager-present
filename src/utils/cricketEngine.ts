@@ -526,41 +526,43 @@ export function computeBallProbabilities(params: {
   let tacticDotShift = 0;
   let tacticWicketMult = 1.0;
 
+  // Minimal tactical nudge (~30% of prior swing) so wickets, 4s, and 6s remain chance-driven
   if (battingStrategy === 'Defensive') {
-    tacticBoundaryShift -= 0.036;
-    tacticDotShift += 0.034;
-    tacticWicketMult *= 0.78;
+    tacticBoundaryShift -= 0.011;
+    tacticDotShift += 0.010;
+    tacticWicketMult *= 0.93;
   } else if (battingStrategy === 'Aggressive') {
-    tacticBoundaryShift += isPureTailender ? 0.006 : 0.024;
-    tacticDotShift -= isPureTailender ? 0.008 : 0.022;
-    tacticWicketMult *= isPureTailender ? 1.24 : 1.13;
+    tacticBoundaryShift += isPureTailender ? 0.002 : 0.008;
+    tacticDotShift -= isPureTailender ? 0.003 : 0.007;
+    tacticWicketMult *= isPureTailender ? 1.07 : 1.04;
   } else if (battingStrategy === 'Ultra-Attacking') {
-    tacticBoundaryShift += isPureTailender ? 0.010 : 0.044;
-    tacticDotShift -= isPureTailender ? 0.012 : 0.040;
-    tacticWicketMult *= isPureTailender ? 1.42 : wicketsLost >= 6 ? 1.12 : 1.30;
+    tacticBoundaryShift += isPureTailender ? 0.003 : 0.014;
+    tacticDotShift -= isPureTailender ? 0.004 : 0.012;
+    tacticWicketMult *= isPureTailender ? 1.12 : wicketsLost >= 6 ? 1.04 : 1.09;
   }
 
   if (bowlingStrategy === 'Defensive') {
-    tacticBoundaryShift -= 0.024;
-    tacticDotShift += 0.020;
-    tacticWicketMult *= 0.88;
+    tacticBoundaryShift -= 0.008;
+    tacticDotShift += 0.007;
+    tacticWicketMult *= 0.96;
   } else if (bowlingStrategy === 'Aggressive') {
-    tacticBoundaryShift += 0.015;
-    tacticDotShift -= 0.012;
-    tacticWicketMult *= 1.09;
+    tacticBoundaryShift += 0.005;
+    tacticDotShift -= 0.004;
+    tacticWicketMult *= 1.03;
   } else if (bowlingStrategy === 'Ultra-Attacking') {
-    tacticBoundaryShift += isPureTailender ? 0.006 : 0.032;
-    tacticDotShift -= 0.020;
-    tacticWicketMult *= isPureTailender ? 1.25 : wicketsLost >= 6 ? 1.04 : 1.18;
+    tacticBoundaryShift += isPureTailender ? 0.002 : 0.010;
+    tacticDotShift -= 0.006;
+    tacticWicketMult *= isPureTailender ? 1.07 : wicketsLost >= 6 ? 1.02 : 1.06;
   }
 
   // Apply active Key Moment tactical decision modifiers
   if (tacticalModifiers) {
-    tacticWicketMult *= 1 + (tacticalModifiers.wicketMultDelta || 0);
-    tacticBoundaryShift += isPureTailender
-      ? (tacticalModifiers.boundaryShiftDelta || 0) * 0.25
-      : tacticalModifiers.boundaryShiftDelta || 0;
-    tacticDotShift += tacticalModifiers.dotShiftDelta || 0;
+    tacticWicketMult *= 1 + (tacticalModifiers.wicketMultDelta || 0) * 0.45;
+    tacticBoundaryShift +=
+      (isPureTailender
+        ? (tacticalModifiers.boundaryShiftDelta || 0) * 0.25
+        : tacticalModifiers.boundaryShiftDelta || 0) * 0.45;
+    tacticDotShift += (tacticalModifiers.dotShiftDelta || 0) * 0.45;
   }
 
   const maxWicketCap =
@@ -587,7 +589,7 @@ export function computeBallProbabilities(params: {
             : 0.055;
 
   const rawWicket =
-    (baseWicket - skillEdge * 0.068) *
+    (baseWicket - skillEdge * 0.045) *
     pitchWicketMult *
     settledWicketMult *
     situationWicketMult *
@@ -600,7 +602,7 @@ export function computeBallProbabilities(params: {
     settledShotBoost +
     situationBoundaryShift +
     tacticBoundaryShift +
-    skillEdge * 0.24;
+    skillEdge * 0.15;
 
   const sixShare = phase === 'death' ? 0.44 : 0.34;
   // Rare <2% cameo probability strictly reserved for genuine bowling all-rounders at the death

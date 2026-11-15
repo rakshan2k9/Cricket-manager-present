@@ -94,19 +94,37 @@ export function computeTeamRatings(xi: SimPlayerInput[]) {
   return { bat, bowl, field, overall };
 }
 
+export function computeFormScore(recentForm?: Array<'W' | 'L' | 'T'>): number {
+  if (!recentForm || recentForm.length === 0) return 0;
+  let score = 0;
+  const slice = recentForm.slice(0, 5);
+  slice.forEach((res, idx) => {
+    const weight = 1 - idx * 0.12;
+    if (res === 'W') score += weight;
+    else if (res === 'L') score -= weight;
+  });
+  return score;
+}
+
 export function computeWinChance(
   homeRatings: { bat: number; bowl: number; field: number; overall: number },
   awayRatings: { bat: number; bowl: number; field: number; overall: number },
-  format: string
+  format: string,
+  homeForm?: Array<'W' | 'L' | 'T'>,
+  awayForm?: Array<'W' | 'L' | 'T'>
 ) {
   const tiePct = format === 'Test' ? 14 : format === 'ODI' ? 3 : 4;
   const remaining = 100 - tiePct;
-  const homePower = homeRatings.bat * 0.42 + homeRatings.bowl * 0.42 + homeRatings.field * 0.16 + 1.2; // slight home advantage
-  const awayPower = awayRatings.bat * 0.42 + awayRatings.bowl * 0.42 + awayRatings.field * 0.16;
+  const homeFormEdge = computeFormScore(homeForm) * 0.75;
+  const awayFormEdge = computeFormScore(awayForm) * 0.75;
+  const homePower =
+    homeRatings.bat * 0.42 + homeRatings.bowl * 0.42 + homeRatings.field * 0.16 + 0.9 + homeFormEdge;
+  const awayPower =
+    awayRatings.bat * 0.42 + awayRatings.bowl * 0.42 + awayRatings.field * 0.16 + awayFormEdge;
   const diff = homePower - awayPower;
-  // logistic curve around 50%
-  const rawHomeShare = 1 / (1 + Math.exp(-diff / 6.5));
-  const homePct = Math.max(12, Math.min(remaining - 12, Math.round(rawHomeShare * remaining)));
+  // Smooth logistic curve allowing realistic cricket upsets even against higher-rated XIs
+  const rawHomeShare = 1 / (1 + Math.exp(-diff / 8.5));
+  const homePct = Math.max(16, Math.min(remaining - 16, Math.round(rawHomeShare * remaining)));
   const awayPct = remaining - homePct;
   return { homePct, tiePct, awayPct };
 }
@@ -249,7 +267,9 @@ function simulateInnings(
   pitchCondition: string,
   targetRuns: number | null,
   inningsNumber: 1 | 2,
-  rng: () => number
+  rng: () => number,
+  batMomentumBonus = 0,
+  bowlMomentumBonus = 0
 ): { summary: MatchInningsSummary; droppedCatches: string[]; turningPoints: string[] } {
   const { maxBalls, ballsPerOver, maxBowlerQuota } = getFormatParamsShared(format);
 
@@ -320,9 +340,13 @@ function simulateInnings(
   }));
 
   const batRivalryBoost =
-    (battingTeam.rivalryBuffJson?.aggressionBoost || 0) + (battingTeam.pressMoraleBuff || 0) * 0.25;
+    (battingTeam.rivalryBuffJson?.aggressionBoost || 0) +
+    (battingTeam.pressMoraleBuff || 0) * 0.25 +
+    batMomentumBonus;
   const bowlRivalryBoost =
-    (bowlingTeam.rivalryBuffJson?.aggressionBoost || 0) + (bowlingTeam.pressMoraleBuff || 0) * 0.25;
+    (bowlingTeam.rivalryBuffJson?.aggressionBoost || 0) +
+    (bowlingTeam.pressMoraleBuff || 0) * 0.25 +
+    bowlMomentumBonus;
 
   let totalRuns = 0;
   let wickets = 0;
@@ -528,6 +552,8 @@ export function simulateCricketMatch(params: {
   pitchCondition: string;
   userCall: 'heads' | 'tails';
   userDecisionIfWon: 'bat' | 'bowl';
+  homeForm?: Array<'W' | 'L' | 'T'>;
+  awayForm?: Array<'W' | 'L' | 'T'>;
   seed?: number;
 }): MatchResultSummary {
   const { homeTeam, awayTeam, homeXI, awayXI, format, pitchCondition, userCall, userDecisionIfWon } =
@@ -541,6 +567,10 @@ export function simulateCricketMatch(params: {
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 4294967296;
   };
+
+  // Match-day form + genuine cricket chance swing (-5.5 to +5.5) so favorites can experience realistic upsets
+  const homeMatchLuck = (rng() - 0.5) * 11 + computeFormScore(params.homeForm) * 0.9;
+  const awayMatchLuck = (rng() - 0.5) * 11 + computeFormScore(params.awayForm) * 0.9;
 
   const coinResult: 'heads' | 'tails' = rng() < 0.5 ? 'heads' : 'tails';
   const userWonToss = coinResult === userCall;
@@ -561,8 +591,10 @@ export function simulateCricketMatch(params: {
 
   const firstTeam = homeBatsFirst ? homeTeam : awayTeam;
   const firstXI = homeBatsFirst ? homeXI : awayXI;
+  const firstLuck = homeBatsFirst ? homeMatchLuck : awayMatchLuck;
   const secondTeam = homeBatsFirst ? awayTeam : homeTeam;
   const secondXI = homeBatsFirst ? awayXI : homeXI;
+  const secondLuck = homeBatsFirst ? awayMatchLuck : homeMatchLuck;
 
   const inn1Res = simulateInnings(
     firstTeam,
@@ -573,7 +605,9 @@ export function simulateCricketMatch(params: {
     pitchCondition,
     null,
     1,
-    rng
+    rng,
+    firstLuck,
+    secondLuck
   );
   const innings1 = inn1Res.summary;
 
@@ -586,7 +620,9 @@ export function simulateCricketMatch(params: {
     pitchCondition,
     innings1.runs + 1,
     2,
-    rng
+    rng,
+    secondLuck,
+    firstLuck
   );
   const innings2 = inn2Res.summary;
 

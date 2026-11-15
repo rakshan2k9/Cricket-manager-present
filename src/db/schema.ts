@@ -174,7 +174,12 @@ export const leagues = pgTable('leagues', {
   auctionDurationSec: integer('auction_duration_sec').notNull().default(20),
   status: text('status').notNull().default('setup'), // setup | auction | active
   seasonStartedAt: timestamp('season_started_at').defaultNow().notNull(),
-  dayDurationSec: integer('day_duration_sec').notNull().default(600), // 1 game day every 10 real minutes
+  dayDurationSec: integer('day_duration_sec').notNull().default(600), // default 10 minutes
+  currentGameDay: integer('current_game_day').notNull().default(1),
+  dayStartedAt: timestamp('day_started_at').defaultNow().notNull(),
+  nextAutoSimAt: timestamp('next_auto_sim_at'),
+  inactivitySimEnabled: boolean('inactivity_sim_enabled').notNull().default(false),
+  inactivityTimeoutSec: integer('inactivity_timeout_sec').notNull().default(86400),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -230,10 +235,11 @@ export const teams = pgTable(
     bookmarkedPlayerIdsJson: jsonb('bookmarked_player_ids_json').$type<number[]>().notNull().default([]),
     trainingSlotsUsedDay: integer('training_slots_used_day').notNull().default(0),
     trainingSlotsUsedCount: integer('training_slots_used_count').notNull().default(0),
-    rivalryBuffJson: jsonb('rivalry_buff_json').$type<RivalryBuff | null>(),
-    pressMoraleBuff: integer('press_morale_buff').notNull().default(0),
-    isCustom: boolean('is_custom').notNull().default(false),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+  rivalryBuffJson: jsonb('rivalry_buff_json').$type<RivalryBuff | null>(),
+  pressMoraleBuff: integer('press_morale_buff').notNull().default(0),
+  stopBuyingInAutoSim: boolean('stop_buying_in_auto_sim').notNull().default(false),
+  isCustom: boolean('is_custom').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => [
     uniqueIndex('teams_league_owner_idx').on(table.leagueId, table.ownerUid),
@@ -571,6 +577,7 @@ export const matches = pgTable(
     resultSummaryJson: jsonb('result_summary_json').$type<MatchResultSummary | null>(),
     pressConferenceCompleted: boolean('press_conference_completed').notNull().default(false),
     pressConferenceJson: jsonb('press_conference_json').$type<PressConferenceData | null>(),
+    resolutionType: text('resolution_type').notNull().default('manual'), // manual | ai_vs_ai | auto_inactivity
     createdByUid: text('created_by_uid').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
@@ -637,6 +644,7 @@ export const fixtures = pgTable(
       .notNull()
       .default([]),
     matchId: integer('match_id').references(() => matches.id, { onDelete: 'set null' }),
+    resolutionType: text('resolution_type').notNull().default('manual'), // manual | ai_vs_ai | auto_inactivity
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

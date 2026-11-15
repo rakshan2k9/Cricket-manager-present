@@ -99,6 +99,7 @@ export function AuctionRoomView({
   const [purseScope, setPurseScope] = useState<'claimed' | 'all'>('all');
   const [bookmarkBusyId, setBookmarkBusyId] = useState<number | null>(null);
   const [autoSimBusy, setAutoSimBusy] = useState(false);
+  const [stopBuyingBusy, setStopBuyingBusy] = useState(false);
   const [skipVoteBusy, setSkipVoteBusy] = useState(false);
   const alertedLotIdRef = useRef<number | null>(null);
 
@@ -272,7 +273,10 @@ export function AuctionRoomView({
         requiredCount: number;
       }>(`/api/leagues/${league.id}/auction/auto-sim/vote`, {
         method: 'POST',
-        body: JSON.stringify({ agree }),
+        body: JSON.stringify({
+          agree,
+          stopBuying: Boolean(myTeam?.stopBuyingInAutoSim),
+        }),
       });
       await onRefreshLeague();
       if (!res.triggered) {
@@ -290,6 +294,31 @@ export function AuctionRoomView({
       onToast({ tone: 'error', title: 'Auto-Sim Vote Failed', body: err.message });
     } finally {
       setAutoSimBusy(false);
+    }
+  };
+
+  const handleToggleStopBuying = async (nextVal: boolean) => {
+    if (!myTeam) return;
+    setStopBuyingBusy(true);
+    try {
+      await apiFetch(`/api/leagues/${league.id}/auction/stop-buying`, {
+        method: 'POST',
+        body: JSON.stringify({ stopBuying: nextVal }),
+      });
+      await onRefreshLeague();
+      onToast({
+        tone: 'info',
+        title: nextVal
+          ? 'Auto-Sim Stop-Buying Enabled (≥ 22)'
+          : 'Auto-Sim Stop-Buying Disabled',
+        body: nextVal
+          ? 'Your club will stop bidding in Auto-Sim once squad reaches 22 players to save purse for staff & training.'
+          : 'Your club will continue bidding in Auto-Sim up to the max squad cap.',
+      });
+    } catch (err: any) {
+      onToast({ tone: 'error', title: 'Preference Update Failed', body: err.message });
+    } finally {
+      setStopBuyingBusy(false);
     }
   };
 
@@ -567,21 +596,48 @@ export function AuctionRoomView({
             </button>
 
             {auction && auction.status !== 'completed' && (
-              <button
-                onClick={() => handleToggleAutoSimVote(!iAgreedAutoSim)}
-                disabled={autoSimBusy}
-                className={`cm27-btn-dark-3d flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50 ${
-                  iAgreedAutoSim ? '!border-[#93E6EE] !text-[#93E6EE]' : 'text-slate-200'
-                }`}
-                title="Auto-simulates the entire auction in seconds once 100% of real managers in the league agree"
-              >
-                <FastForward className="w-3.5 h-3.5" />
-                <span>
-                  {iAgreedAutoSim
-                    ? `Auto-Sim Agreed (${autoSimAgreedCount}/${autoSimRequiredCount})`
-                    : `Auto-Sim (${autoSimAgreedCount}/${autoSimRequiredCount})`}
-                </span>
-              </button>
+              <>
+                <button
+                  onClick={() => handleToggleAutoSimVote(!iAgreedAutoSim)}
+                  disabled={autoSimBusy}
+                  className={`cm27-btn-dark-3d flex items-center gap-1.5 px-3.5 py-2 rounded text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50 ${
+                    iAgreedAutoSim ? '!border-[#93E6EE] !text-[#93E6EE]' : 'text-slate-200'
+                  }`}
+                  title="Auto-simulates the entire auction in seconds once 100% of real managers in the league agree"
+                >
+                  <FastForward className="w-3.5 h-3.5" />
+                  <span>
+                    {iAgreedAutoSim
+                      ? `Auto-Sim Agreed (${autoSimAgreedCount}/${autoSimRequiredCount})`
+                      : `Auto-Sim (${autoSimAgreedCount}/${autoSimRequiredCount})`}
+                  </span>
+                </button>
+                {myTeam && (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(myTeam.stopBuyingInAutoSim)}
+                    onClick={() => handleToggleStopBuying(!myTeam.stopBuyingInAutoSim)}
+                    disabled={stopBuyingBusy}
+                    className={`cm27-btn-dark-3d flex items-center gap-1.5 px-3 py-2 rounded text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50 ${
+                      myTeam.stopBuyingInAutoSim
+                        ? '!border-[#4ADE80]/60 !text-[#4ADE80] bg-[#4ADE80]/10'
+                        : 'text-slate-300'
+                    }`}
+                    title="Stop buying in Auto-Sim once your squad reaches 22 players so you preserve remaining purse for coaches, scouts, and training."
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>
+                      Stop Buying ≥22:{' '}
+                      {myTeam.stopBuyingInAutoSim
+                        ? (myTeam.squadCount ?? 0) >= 22
+                          ? 'ON (Active)'
+                          : `ON (${myTeam.squadCount ?? 0}/22)`
+                        : 'OFF'}
+                    </span>
+                  </button>
+                )}
+              </>
             )}
 
             {isHost && (
@@ -1128,7 +1184,7 @@ export function AuctionRoomView({
 
             <div className="md:col-span-7 cm27-panel overflow-hidden">
               <div className="px-4 pt-2.5 border-b border-white/[0.08] bg-[#0E1218] flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-5 overflow-x-auto">
+                <div className="flex items-center gap-4 sm:gap-5 overflow-x-auto no-scrollbar">
                   <button
                     onClick={() => setLotTab('sets')}
                     className={`pb-2.5 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 border-b-2 transition-colors ${

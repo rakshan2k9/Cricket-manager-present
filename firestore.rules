@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUser(data, uid) {
+      return data.keys().hasAll(['id', 'uid', 'email', 'createdAt'])
+        && data.keys().hasOnly(['id', 'uid', 'email', 'createdAt'])
+        && data.id is int
+        && data.uid is string
+        && data.uid == uid
+        && data.email is string
+        && data.email.size() <= 320
+        && data.createdAt is string
+        && data.createdAt.size() <= 64;
+    }
+
+    function isValidProfile(data, uid) {
+      return data.keys().hasAll(['userUid', 'managerName', 'country', 'favoriteFormat', 'avatarUrl', 'updatedAt'])
+        && data.keys().hasOnly([
+          'userUid', 'managerName', 'firstName', 'lastName', 'preferredName',
+          'country', 'preferredCurrency', 'birthYear', 'birthMonth', 'birthDay',
+          'coachExperience', 'coachBackground', 'coachingStyle', 'favoriteFormat',
+          'avatarUrl', 'bio', 'reputation', 'updatedAt'
+        ])
+        && data.userUid is string
+        && data.userUid == uid
+        && data.managerName is string && data.managerName.size() >= 1 && data.managerName.size() <= 80
+        && data.country is string && data.country.size() >= 1 && data.country.size() <= 80
+        && data.favoriteFormat is string && data.favoriteFormat.size() <= 20
+        && data.avatarUrl is string && data.avatarUrl.size() <= 512
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidLeague(data) {
+      return data.keys().hasAll(['id', 'name', 'inviteCode', 'hostUid', 'status', 'memberUids', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'name', 'inviteCode', 'hostUid', 'primaryCompetition',
+          'status', 'memberUids', 'leagueJson', 'updatedAt'
+        ])
+        && data.id is int
+        && data.name is string && data.name.size() >= 3 && data.name.size() <= 100
+        && data.inviteCode is string && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 16
+        && data.hostUid is string && data.hostUid.size() <= 128
+        && data.status is string && data.status in ['setup', 'auction', 'active']
+        && data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 12
+        && data.memberUids[0] is string
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isLeagueMember(leagueId) {
+      let leagueDoc = get(/databases/$(database)/documents/leagues/$(leagueId)).data;
+      return isSignedIn() && (
+        leagueDoc.hostUid == request.auth.uid ||
+        request.auth.uid in leagueDoc.memberUids
+      );
+    }
+
+    function isValidLeagueSection(data) {
+      return data.keys().hasAll(['section', 'payloadJson', 'updatedAt'])
+        && data.keys().hasOnly(['section', 'payloadJson', 'updatedAt'])
+        && data.section is string && data.section in ['core', 'players', 'auction', 'matches', 'comms']
+        && data.payloadJson is string && data.payloadJson.size() <= 950000
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidLeagueInvite(data, inviteCode) {
+      return data.keys().hasAll(['inviteCode', 'leagueId', 'leagueName', 'hostUid', 'updatedAt'])
+        && data.keys().hasOnly(['inviteCode', 'leagueId', 'leagueName', 'hostUid', 'updatedAt'])
+        && data.inviteCode is string && data.inviteCode == inviteCode && data.inviteCode.size() <= 16
+        && data.leagueId is int
+        && data.leagueName is string && data.leagueName.size() <= 100
+        && data.hostUid is string && data.hostUid.size() <= 128
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidFriendship(data) {
+      return data.keys().hasAll(['id', 'requesterUid', 'addresseeUid', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'requesterUid', 'addresseeUid', 'status', 'createdAt', 'updatedAt'])
+        && data.id is int
+        && data.requesterUid is string && data.requesterUid.size() <= 128
+        && data.addresseeUid is string && data.addresseeUid.size() <= 128
+        && data.status is string && data.status in ['pending', 'accepted']
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidDirectMessage(data) {
+      return data.keys().hasAll(['id', 'senderUid', 'recipientUid', 'body', 'isRead', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'senderUid', 'recipientUid', 'body',
+          'inviteCode', 'inviteLeagueName', 'isRead', 'createdAt'
+        ])
+        && data.id is int
+        && data.senderUid is string && data.senderUid.size() <= 128
+        && data.recipientUid is string && data.recipientUid.size() <= 128
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 2000
+        && data.isRead is bool
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    // Read-only connection health probe
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // Strict PII isolation: users can only read/write their own account doc
+    match /users/{uid} {
+      allow get: if isValidId(uid) && isOwner(uid);
+      allow create: if isValidId(uid) && isVerifiedUser() && isOwner(uid) && isValidUser(incoming(), uid);
+      allow update: if isValidId(uid) && isVerifiedUser() && isOwner(uid)
+        && isValidUser(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt;
+    }
+
+    // Manager profiles: signed-in managers can read peer profiles; only owner can write
+    match /profiles/{uid} {
+      allow get: if isValidId(uid) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.userUid is string;
+      allow create: if isValidId(uid) && isVerifiedUser() && isOwner(uid) && isValidProfile(incoming(), uid);
+      allow update: if isValidId(uid) && isVerifiedUser() && isOwner(uid)
+        && isValidProfile(incoming(), uid)
+        && incoming().userUid == existing().userUid;
+    }
+
+    // Leagues: restricted to participating members; joining member may append self to memberUids
+    match /leagues/{leagueId} {
+      allow get: if isValidId(leagueId) && isSignedIn() && (
+        existing().hostUid == request.auth.uid || request.auth.uid in existing().memberUids
+      );
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+      allow create: if isValidId(leagueId) && isVerifiedUser()
+        && isValidLeague(incoming())
+        && incoming().hostUid == request.auth.uid
+        && request.auth.uid in incoming().memberUids;
+      allow update: if isValidId(leagueId) && isVerifiedUser()
+        && isValidLeague(incoming())
+        && incoming().hostUid == existing().hostUid
+        && (
+          existing().hostUid == request.auth.uid ||
+          request.auth.uid in existing().memberUids ||
+          (request.auth.uid in incoming().memberUids && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']))
+        );
+      allow delete: if isValidId(leagueId) && isVerifiedUser() && existing().hostUid == request.auth.uid;
+
+      match /state/{section} {
+        allow get, list: if isValidId(leagueId) && isLeagueMember(leagueId);
+        allow create, update: if isValidId(leagueId) && isValidId(section) && isVerifiedUser()
+          && isLeagueMember(leagueId) && isValidLeagueSection(incoming());
+        allow delete: if isValidId(leagueId) && isVerifiedUser()
+          && get(/databases/$(database)/documents/leagues/$(leagueId)).data.hostUid == request.auth.uid;
+      }
+    }
+
+    // League invite lookup by code (single-document get only, no scraping via list)
+    match /leagueInvites/{inviteCode} {
+      allow get: if isValidId(inviteCode) && isSignedIn();
+      allow create: if isValidId(inviteCode) && isVerifiedUser()
+        && isValidLeagueInvite(incoming(), inviteCode)
+        && incoming().hostUid == request.auth.uid;
+      allow update, delete: if isValidId(inviteCode) && isVerifiedUser()
+        && existing().hostUid == request.auth.uid;
+    }
+
+    // Friendships: only requester or addressee may read/modify
+    match /friendships/{friendshipId} {
+      allow get: if isValidId(friendshipId) && isSignedIn() && (
+        existing().requesterUid == request.auth.uid || existing().addresseeUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        resource.data.requesterUid == request.auth.uid || resource.data.addresseeUid == request.auth.uid
+      );
+      allow create: if isValidId(friendshipId) && isVerifiedUser()
+        && isValidFriendship(incoming())
+        && incoming().requesterUid == request.auth.uid;
+      allow update: if isValidId(friendshipId) && isVerifiedUser()
+        && isValidFriendship(incoming())
+        && (existing().requesterUid == request.auth.uid || existing().addresseeUid == request.auth.uid);
+      allow delete: if isValidId(friendshipId) && isVerifiedUser()
+        && (existing().requesterUid == request.auth.uid || existing().addresseeUid == request.auth.uid);
+    }
+
+    // Direct messages: only sender or recipient may read/write
+    match /directMessages/{messageId} {
+      allow get: if isValidId(messageId) && isSignedIn() && (
+        existing().senderUid == request.auth.uid || existing().recipientUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        resource.data.senderUid == request.auth.uid || resource.data.recipientUid == request.auth.uid
+      );
+      allow create: if isValidId(messageId) && isVerifiedUser()
+        && isValidDirectMessage(incoming())
+        && incoming().senderUid == request.auth.uid;
+      allow update: if isValidId(messageId) && isVerifiedUser()
+        && isValidDirectMessage(incoming())
+        && existing().recipientUid == request.auth.uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+    }
+  }
+}

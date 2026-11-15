@@ -23,6 +23,9 @@ import {
 } from 'lucide-react';
 import type { LeagueStateSnapshot } from '../types/game';
 import {
+  DEFAULT_AUTO_SIM_INTERVAL_SEC,
+  formatAutoSimIntervalLabel,
+  formatCountdownDuration,
   formatCurrencyLakhs,
   formatTimeAgo,
   getCompetitionDisplayLabel,
@@ -99,30 +102,47 @@ export function DashboardView({
     return () => clearInterval(id);
   }, []);
 
-  const dayDurationSec = Math.max(60, state.league.dayDurationSec || 600);
-  const { currentGameDay, nextDayInSec } = useMemo(() => {
-    if (!state.league.seasonStartedAt) {
-      return {
-        currentGameDay: state.currentGameDay || 1,
-        nextDayInSec: state.nextDayInSec || dayDurationSec,
-      };
+  const [advancingDay, setAdvancingDay] = useState(false);
+
+  const dayDurationSec = Math.max(
+    60,
+    state.league.dayDurationSec || DEFAULT_AUTO_SIM_INTERVAL_SEC
+  );
+  const currentGameDay = state.currentGameDay || state.league.currentGameDay || 1;
+  const myProgression = state.myProgression || null;
+
+  const nextDayInSec = useMemo(() => {
+    const nextAutoIso = state.nextAutoSimAt || state.league.nextAutoSimAt;
+    if (nextAutoIso) {
+      const targetMs = new Date(nextAutoIso).getTime();
+      if (Number.isFinite(targetMs)) {
+        return Math.max(0, Math.ceil((targetMs - nowMs) / 1000));
+      }
     }
-    const startMs = new Date(state.league.seasonStartedAt).getTime();
+    const anchorIso =
+      state.dayStartedAt || state.league.dayStartedAt || state.league.seasonStartedAt;
+    if (!anchorIso) {
+      return state.nextDayInSec ?? dayDurationSec;
+    }
+    const startMs = new Date(anchorIso).getTime();
     if (!Number.isFinite(startMs)) {
-      return {
-        currentGameDay: state.currentGameDay || 1,
-        nextDayInSec: state.nextDayInSec || dayDurationSec,
-      };
+      return state.nextDayInSec ?? dayDurationSec;
     }
     const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
-    const day = Math.floor(elapsedSec / dayDurationSec) + 1;
-    const nextIn = dayDurationSec - (elapsedSec % dayDurationSec);
-    return { currentGameDay: day, nextDayInSec: nextIn };
-  }, [nowMs, state.league.seasonStartedAt, dayDurationSec, state.currentGameDay, state.nextDayInSec]);
+    return Math.max(0, dayDurationSec - elapsedSec);
+  }, [
+    nowMs,
+    state.nextAutoSimAt,
+    state.league.nextAutoSimAt,
+    state.dayStartedAt,
+    state.league.dayStartedAt,
+    state.league.seasonStartedAt,
+    dayDurationSec,
+    state.nextDayInSec,
+  ]);
 
-  const countdownLabel = `${String(Math.floor(nextDayInSec / 60)).padStart(2, '0')}:${String(
-    nextDayInSec % 60
-  ).padStart(2, '0')}`;
+  const countdownLabel = formatCountdownDuration(nextDayInSec);
+  const intervalLabel = formatAutoSimIntervalLabel(dayDurationSec);
 
   const weekdayLabel = WEEKDAY_NAMES[(currentGameDay + 2) % 7];
 
@@ -197,6 +217,24 @@ export function DashboardView({
       setAuctionError(err.message || 'Claim a club first to start the auction.');
     } finally {
       setStartingAuction(false);
+    }
+  };
+
+  const handleAdvanceDay = async () => {
+    if (nextUserFixture && myTeam) {
+      onNavigate('matchday');
+      return;
+    }
+    if (auction?.auction.status === 'live') {
+      onNavigate('auction');
+      return;
+    }
+    setAdvancingDay(true);
+    try {
+      if (onRefreshState) await onRefreshState();
+      else actionRows[0]?.onClick();
+    } finally {
+      setAdvancingDay(false);
     }
   };
 
@@ -455,26 +493,43 @@ export function DashboardView({
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <h1 className="font-condensed text-4xl sm:text-5xl font-bold tracking-tight text-white uppercase leading-none">
-                {weekdayLabel}, DAY {String(currentGameDay).padStart(2, '0')}
+                {weekdayLabel}, GLOBAL DAY {String(currentGameDay).padStart(2, '0')}
               </h1>
-              <span className="inline-flex items-center gap-1.5 text-xs font-mono text-slate-400 tabular-nums">
-                <Clock className="w-3.5 h-3.5 text-[#93E6EE]" />
-                <span>Next Day in {countdownLabel}</span>
-              </span>
+              <div className="flex flex-wrap items-center gap-3 text-xs font-mono tabular-nums">
+                <span className="inline-flex items-center gap-1.5 text-slate-300">
+                  <Clock className="w-3.5 h-3.5 text-[#93E6EE]" />
+                  <span>
+                    Next Auto-Sim in <strong className="text-white">{countdownLabel}</strong> ({intervalLabel})
+                  </span>
+                </span>
+                {myProgression && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-[#101620] border border-[#93E6EE]/25 text-[#93E6EE]">
+                    My Progress: Played Day {myProgression.playedThroughDay}
+                    {myProgression.daysAheadOfGlobal > 0
+                      ? ` (+${myProgression.daysAheadOfGlobal} ahead)`
+                      : ''}
+                  </span>
+                )}
+              </div>
             </div>
             <p className="text-xs text-slate-400">
               {nextUserFixture && nextUserOpponent
-                ? `Next Fixture in Day ${nextUserFixture.scheduledDay} · ${nextUserOpponent.name} (${nextUserFixture.homeTeamId === myTeam?.id ? 'Home' : 'Away'})${isNextUserPvp ? ' · Live PvP' : ''}`
+                ? `Next Club Fixture (Day ${nextUserFixture.scheduledDay}) · ${nextUserOpponent.name} (${nextUserFixture.homeTeamId === myTeam?.id ? 'Home' : 'Away'})${isNextUserPvp ? ' · Live PvP' : ' · Play Anytime'}`
                 : `${getCompetitionDisplayLabel(state.league.primaryCompetition)} · ${state.league.name} · ${myTeam ? myTeam.name : 'Club Selection Open'}`}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
-              onClick={() => actionRows[0]?.onClick()}
-              className="px-4 py-1.5 rounded-full bg-white/[0.08] hover:bg-white/[0.16] border border-white/20 hover:border-white/45 text-xs font-semibold text-white transition-all cursor-pointer active:scale-95"
+              onClick={handleAdvanceDay}
+              disabled={advancingDay}
+              className="px-4 py-1.5 rounded-full bg-white/[0.11] hover:bg-white/[0.18] border border-white/25 hover:border-white/50 text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 disabled:opacity-50"
             >
-              Advance
+              {advancingDay
+                ? 'Syncing...'
+                : nextUserFixture && myTeam
+                  ? `Play Next Fixture (Day ${nextUserFixture.scheduledDay})`
+                  : 'Sync Calendar'}
             </button>
             <span className="inline-flex items-center px-3.5 py-1 rounded-full border border-rose-500/45 bg-rose-500/12 text-xs font-semibold text-rose-200">
               Actions Required
@@ -546,7 +601,7 @@ export function DashboardView({
         <div className="lg:col-span-5 xl:col-span-4 space-y-3 cm27-stagger-2">
           <div
             key={socialIdx}
-            className="cm27-slide-right rounded-xl border border-white/[0.09] bg-[#0B0F14]/82 backdrop-blur-md p-3.5 space-y-3 shadow-2xl"
+            className="cm27-slide-right rounded-xl border border-white/[0.14] bg-[#10161F]/88 backdrop-blur-md p-3.5 space-y-3 shadow-2xl"
           >
             {/* Social Handle Header */}
             <div className="flex items-center justify-between gap-2 px-0.5">
@@ -568,18 +623,18 @@ export function DashboardView({
                   <div className="text-[11px] text-slate-400 truncate">{activeSlide.subhandle}</div>
                 </div>
               </div>
-              <span className="px-2 py-0.5 rounded border border-white/15 bg-white/[0.04] text-[10px] font-mono uppercase tracking-wider text-slate-300 shrink-0">
+              <span className="px-2 py-0.5 rounded border border-white/20 bg-white/[0.07] text-[10px] font-mono uppercase tracking-wider text-slate-200 shrink-0">
                 {activeSlide.badge}
               </span>
             </div>
 
-            {/* Atmospheric Dark Stadium Match / Season Graphic Box */}
-            <div className="relative h-64 rounded-lg border border-white/[0.07] bg-[#070B0D] overflow-hidden p-5 flex flex-col justify-between">
+            {/* Atmospheric Stadium Match / Season Graphic Box */}
+            <div className="relative h-64 rounded-lg border border-white/[0.10] bg-[#0B1217] overflow-hidden p-5 flex flex-col justify-between">
               <div
                 className="absolute inset-0 pointer-events-none"
                 style={{
                   background:
-                    'radial-gradient(ellipse 80% 70% at 22% 24%, rgba(72, 118, 96, 0.22), transparent 62%), radial-gradient(ellipse 75% 65% at 82% 82%, rgba(92, 134, 152, 0.16), transparent 62%)',
+                    'radial-gradient(ellipse 85% 75% at 22% 24%, rgba(78, 134, 108, 0.30), transparent 62%), radial-gradient(ellipse 80% 70% at 82% 82%, rgba(98, 150, 172, 0.22), transparent 62%)',
                 }}
               />
 

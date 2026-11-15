@@ -135,6 +135,11 @@ export interface League {
   status: 'setup' | 'auction' | 'active';
   seasonStartedAt?: string;
   dayDurationSec?: number;
+  dayStartedAt?: string;
+  nextAutoSimAt?: string | null;
+  inactivitySimEnabled?: boolean;
+  inactivityTimeoutSec?: number;
+  dayPausedForHumanMatch?: boolean;
   currentGameDay?: number;
   nextDayInSec?: number;
   createdAt: string;
@@ -142,6 +147,17 @@ export interface League {
   memberCount?: number;
   onlineCount?: number;
   myTeam?: Team | null;
+}
+
+export type MatchResolutionType = 'manual' | 'ai_vs_ai' | 'auto_inactivity';
+
+export interface TeamProgressionSummary {
+  teamId: number;
+  playedCount: number;
+  pendingCount: number;
+  playedThroughDay: number;
+  nextPendingFixtureDay: number | null;
+  daysAheadOfGlobal: number;
 }
 
 export interface LeagueMember {
@@ -188,6 +204,7 @@ export interface Team {
   trainingSlotsUsedCount?: number;
   rivalryBuffJson?: RivalryBuff | null;
   pressMoraleBuff?: number;
+  stopBuyingInAutoSim?: boolean;
   isCustom: boolean;
   squadCount?: number;
   overseasCount?: number;
@@ -424,6 +441,7 @@ export interface LeagueFixture {
     votedAt: string;
   }>;
   matchId: number | null;
+  resolutionType?: MatchResolutionType;
   createdAt: string;
   updatedAt: string;
 }
@@ -548,6 +566,13 @@ export interface LeagueStateSnapshot {
   tradeOffers?: TradeOfferRecord[];
   currentGameDay?: number;
   nextDayInSec?: number;
+  dayStartedAt?: string;
+  nextAutoSimAt?: string | null;
+  inactivitySimEnabled?: boolean;
+  inactivityTimeoutSec?: number;
+  dayPausedForHumanMatch?: boolean;
+  myProgression?: TeamProgressionSummary | null;
+  teamProgressions?: TeamProgressionSummary[];
   onlineUids: string[];
 }
 
@@ -619,6 +644,7 @@ export interface MatchRecord {
   resultSummaryJson: MatchResultSummary | null;
   pressConferenceCompleted?: boolean;
   pressConferenceJson?: PressConferenceData | null;
+  resolutionType?: MatchResolutionType;
   createdByUid: string;
   createdAt: string;
 }
@@ -637,6 +663,8 @@ export interface MatchPreviewData {
   homeSquadAll: Player[];
   homeRatings: { bat: number; bowl: number; field: number; overall: number };
   awayRatings: { bat: number; bowl: number; field: number; overall: number };
+  homeForm?: Array<'W' | 'L' | 'T'>;
+  awayForm?: Array<'W' | 'L' | 'T'>;
   winChance: { homePct: number; tiePct: number; awayPct: number };
   headToHead: {
     played: number;

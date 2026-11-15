@@ -143,21 +143,47 @@ export function useLeagueRealtime(
               }
 
               case 'league:updated': {
+                const payload = msg.payload || {};
+                if (payload.dayAdvanced && payload.currentGameDay) {
+                  pushToast({
+                    tone: 'info',
+                    title: `Global League Day ${payload.currentGameDay}`,
+                    body: 'Scheduled AI fixtures and daily calendar updated.',
+                  });
+                }
                 setState((prev) => {
                   if (!prev) return prev;
-                  const nextTeams = msg.payload?.teams ?? prev.teams;
+                  const nextTeams = payload.teams ?? prev.teams;
                   const myUid = prev.myTeam?.ownerUid;
+                  const nextLeague = payload.league
+                    ? payload.league
+                    : {
+                        ...prev.league,
+                        ...(payload.currentGameDay !== undefined ? { currentGameDay: payload.currentGameDay } : {}),
+                        ...(payload.dayDurationSec !== undefined ? { dayDurationSec: payload.dayDurationSec } : {}),
+                        ...(payload.dayStartedAt !== undefined ? { dayStartedAt: payload.dayStartedAt } : {}),
+                        ...(payload.nextAutoSimAt !== undefined ? { nextAutoSimAt: payload.nextAutoSimAt } : {}),
+                        ...(payload.nextDayInSec !== undefined ? { nextDayInSec: payload.nextDayInSec } : {}),
+                        ...(payload.inactivitySimEnabled !== undefined ? { inactivitySimEnabled: payload.inactivitySimEnabled } : {}),
+                        ...(payload.inactivityTimeoutSec !== undefined ? { inactivityTimeoutSec: payload.inactivityTimeoutSec } : {}),
+                      };
                   return {
                     ...prev,
-                    league: msg.payload?.league ?? prev.league,
-                    members: msg.payload?.members ?? prev.members,
+                    league: nextLeague,
+                    members: payload.members ?? prev.members,
                     teams: nextTeams,
+                    ...(payload.currentGameDay !== undefined ? { currentGameDay: payload.currentGameDay } : {}),
+                    ...(payload.dayStartedAt !== undefined ? { dayStartedAt: payload.dayStartedAt } : {}),
+                    ...(payload.nextAutoSimAt !== undefined ? { nextAutoSimAt: payload.nextAutoSimAt } : {}),
+                    ...(payload.nextDayInSec !== undefined ? { nextDayInSec: payload.nextDayInSec } : {}),
+                    ...(payload.inactivitySimEnabled !== undefined ? { inactivitySimEnabled: payload.inactivitySimEnabled } : {}),
+                    ...(payload.inactivityTimeoutSec !== undefined ? { inactivityTimeoutSec: payload.inactivityTimeoutSec } : {}),
                     myTeam: myUid
                       ? nextTeams.find((t: any) => t.ownerUid === myUid) ?? prev.myTeam
                       : prev.myTeam,
                   };
                 });
-                // Also pull full state to ensure myTeam is accurate if newly claimed
+                // Also pull full state to ensure myTeam & progressions are authoritative
                 fetchLeagueState(leagueId);
                 break;
               }

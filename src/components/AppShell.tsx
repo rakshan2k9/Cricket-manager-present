@@ -1,13 +1,26 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Info,
   Menu,
+  Pause,
+  Play,
+  Repeat,
+  Repeat1,
+  Settings,
+  Shuffle,
+  SkipBack,
+  SkipForward,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import type { LeagueStateSnapshot } from '../types/game';
 import { formatCurrencyLakhs, formatTimeAgo } from '../utils/format';
+import { formatMediaTime } from '../utils/audioLogic';
 import { useAuth } from '../context/AuthContext';
+import { useSettings } from '../context/SettingsContext';
+import { soundEngine } from '../utils/soundEngine';
 import { TeamCrest } from './TeamCrest';
 
 export type ActiveTab =
@@ -47,6 +60,7 @@ export function AppShell({
   state,
   activeTab,
   onSelectTab,
+  onOpenGameSettings,
   onBackToLobby,
   wsConnected,
   onRefreshState,
@@ -55,14 +69,46 @@ export function AppShell({
   state: LeagueStateSnapshot;
   activeTab: ActiveTab;
   onSelectTab: (tab: ActiveTab) => void;
+  onOpenGameSettings?: () => void;
   onBackToLobby: () => void;
   wsConnected: boolean;
   onRefreshState: () => Promise<void>;
   children: React.ReactNode;
 }) {
   const { user, profile } = useAuth();
+  const {
+    settings,
+    currentTrack,
+    tracks,
+    musicPlayback,
+    updateSetting,
+    toggleRadio,
+    nextTrack,
+    prevTrack,
+    selectTrack,
+    seekMusic,
+    cycleRepeatMode,
+    toggleShuffle,
+  } = useSettings();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [clubInfoModalOpen, setClubInfoModalOpen] = useState(false);
+  const [trackMenuOpen, setTrackMenuOpen] = useState(false);
+  const trackMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setTrackMenuOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!trackMenuOpen) return;
+    const onOutsideClick = (e: MouseEvent) => {
+      if (trackMenuRef.current && !trackMenuRef.current.contains(e.target as Node)) {
+        setTrackMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onOutsideClick);
+    return () => window.removeEventListener('mousedown', onOutsideClick);
+  }, [trackMenuOpen]);
 
   const currency = profile?.preferredCurrency || 'INR';
 
@@ -74,23 +120,34 @@ export function AppShell({
 
   const stepTab = (delta: -1 | 1) => {
     const nextIdx = (currentIdx + delta + NAV_ITEMS.length) % NAV_ITEMS.length;
+    soundEngine.playTabSwitch();
     onSelectTab(NAV_ITEMS[nextIdx].id);
   };
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (e.key === '[' || e.key === 'q' || e.key === 'Q' || (e.shiftKey && e.key === 'ArrowLeft')) {
-        e.preventDefault();
-        stepTab(-1);
+      if (settings.quickTabStepping && settings.keyboardShortcuts) {
+        if (e.key === '[' || e.key === 'q' || e.key === 'Q' || (e.shiftKey && e.key === 'ArrowLeft')) {
+          e.preventDefault();
+          stepTab(-1);
+        }
+        if (e.key === ']' || e.key === 'e' || e.key === 'E' || (e.shiftKey && e.key === 'ArrowRight')) {
+          e.preventDefault();
+          stepTab(1);
+        }
       }
-      if (e.key === ']' || e.key === 'e' || e.key === 'E' || (e.shiftKey && e.key === 'ArrowRight')) {
-        e.preventDefault();
-        stepTab(1);
-      }
-      if (e.key === 'Escape' && clubInfoModalOpen) {
-        setClubInfoModalOpen(false);
+      if (e.key === 'Escape') {
+        if (clubInfoModalOpen) {
+          soundEngine.playMenuClose();
+          setClubInfoModalOpen(false);
+        }
+        if (trackMenuOpen) {
+          soundEngine.playMenuClose();
+          setTrackMenuOpen(false);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -98,6 +155,7 @@ export function AppShell({
   });
 
   const handleSelectNav = (tab: ActiveTab) => {
+    soundEngine.playTabSwitch();
     onSelectTab(tab);
   };
 
@@ -144,12 +202,13 @@ export function AppShell({
         <rect x="880" y="610" width="160" height="310" fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="1" />
       </svg>
 
-      {/* Primary CM27 Top Navigation Header matching Reference Image 4 */}
-      <header className="sticky top-0 z-40 bg-[#070A0E]/80 backdrop-blur-md border-b border-white/[0.07]">
+      {/* Primary CM27 Top Navigation Header matching Reference Images 6 & 8 */}
+      <header className="sticky top-0 z-40 bg-gradient-to-b from-[#070B10]/95 via-[#070B10]/78 to-transparent backdrop-blur-md">
         <div className="max-w-[1560px] mx-auto h-13 px-3 sm:px-5 flex items-center justify-between gap-2">
           {/* Left: CM27 White/Gold Logo + Lobby Back */}
           <div className="flex items-center gap-2.5 shrink-0">
             <button
+              data-sfx="menu-open"
               onClick={() => setMobileMenuOpen(true)}
               className="lg:hidden p-1.5 rounded text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer"
               aria-label="Open navigation menu"
@@ -158,6 +217,7 @@ export function AppShell({
             </button>
 
             <button
+              data-sfx="none"
               onClick={() => handleSelectNav('dashboard')}
               className="flex items-baseline cursor-pointer whitespace-nowrap shrink-0"
               title="Cricket Manager 27 Home"
@@ -181,12 +241,13 @@ export function AppShell({
           </div>
 
           {/* Center: Hub Context + [Q] + Underlined Tabs + [E] matching Reference Image 4 */}
-          <nav className="hidden lg:flex items-center gap-0.5 overflow-x-auto no-scrollbar">
+          <nav className="hidden lg:flex flex-1 min-w-0 justify-center items-center gap-0 xl:gap-0.5 overflow-x-auto no-scrollbar">
             <span className="text-[12px] font-semibold text-white whitespace-nowrap shrink-0 mr-2 hidden 2xl:inline tracking-wide">
               {activeTabLabel} Hub
             </span>
 
             <button
+              data-sfx="none"
               onClick={() => stepTab(-1)}
               className="cm27-keycap hover:text-white hover:border-white/35 transition-colors mr-1 cursor-pointer shrink-0"
               title="Previous tab (Q or [)"
@@ -203,13 +264,14 @@ export function AppShell({
               return (
                 <button
                   key={item.id}
+                  data-sfx="none"
                   onClick={() => handleSelectNav(item.id)}
                   title={
                     item.id === 'gazette' && readyPress > 0
                       ? 'Press Conference Ready'
                       : undefined
                   }
-                  className={`relative px-1.5 xl:px-2 py-3.5 text-[11.5px] font-semibold tracking-wide transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 ${
+                  className={`relative px-1.5 xl:px-2 py-3.5 text-[11px] xl:text-[11.5px] font-semibold tracking-wide transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 ${
                     active ? 'text-white' : 'text-slate-400/90 hover:text-slate-100'
                   }`}
                 >
@@ -239,6 +301,7 @@ export function AppShell({
             })}
 
             <button
+              data-sfx="none"
               onClick={() => stepTab(1)}
               className="cm27-keycap hover:text-white hover:border-white/35 transition-colors ml-1 cursor-pointer shrink-0"
               title="Next tab (E or ])"
@@ -287,6 +350,21 @@ export function AppShell({
             </button>
 
             <button
+              data-sfx="none"
+              onClick={() => {
+                soundEngine.playTabSwitch();
+                if (onOpenGameSettings) onOpenGameSettings();
+                else handleSelectNav('settings');
+              }}
+              className="w-7 h-7 rounded-full border border-white/20 hover:border-white/55 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              title="Game Settings (Audio · Display · Controls)"
+              aria-label="Game Settings"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              data-sfx="menu-open"
               onClick={() => setClubInfoModalOpen(true)}
               className="w-7 h-7 rounded-full border border-white/25 hover:border-white/60 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
               title="Club & League Info"
@@ -359,9 +437,9 @@ export function AppShell({
         {children}
       </main>
 
-      {/* Bottom Keybind & Season Strip */}
-      <footer className="relative z-10 border-t border-white/[0.07] bg-[#070A0E]/80 backdrop-blur-md py-2 px-4 sm:px-6">
-        <div className="max-w-[1560px] mx-auto flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+      {/* Bottom Keybind, Music Player Pill & Season Strip (Reference Image 5) */}
+      <footer className="relative z-20 bg-transparent py-2.5 px-4 sm:px-6">
+        <div className="max-w-[1560px] mx-auto flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-400">
           <div className="flex items-center gap-3.5">
             <button
               onClick={onBackToLobby}
@@ -383,7 +461,247 @@ export function AppShell({
             </span>
           </div>
 
-          <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums">
+          <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] tabular-nums relative">
+            {/* Persistent Footer Music Player Widget */}
+            <div className="relative" ref={trackMenuRef}>
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#0C1016]/90 border border-white/15 text-slate-200 backdrop-blur-md">
+                <button
+                  type="button"
+                  data-sfx="none"
+                  onClick={() => {
+                    const nextOpen = !trackMenuOpen;
+                    if (nextOpen) soundEngine.playMenuOpen();
+                    else soundEngine.playMenuClose();
+                    setTrackMenuOpen(nextOpen);
+                  }}
+                  className="inline-flex items-center gap-2 hover:text-white cursor-pointer"
+                  title={`${currentTrack.title} — ${currentTrack.artist} · Click for playlist`}
+                >
+                  <span className="inline-flex items-end gap-[2px] h-3" aria-hidden="true">
+                    <span
+                      className={`w-[2px] rounded-full bg-slate-200 transition-all ${
+                        musicPlayback.isPlaying && !settings.muteMusic
+                          ? 'h-3 animate-pulse'
+                          : 'h-1.5 opacity-50'
+                      }`}
+                    />
+                    <span
+                      className={`w-[2px] rounded-full bg-[#93E6EE] transition-all ${
+                        musicPlayback.isPlaying && !settings.muteMusic
+                          ? 'h-2 animate-pulse'
+                          : 'h-1 opacity-50'
+                      }`}
+                    />
+                    <span
+                      className={`w-[2px] rounded-full bg-slate-200 transition-all ${
+                        musicPlayback.isPlaying && !settings.muteMusic
+                          ? 'h-2.5 animate-pulse'
+                          : 'h-1.5 opacity-50'
+                      }`}
+                    />
+                  </span>
+                  <span className="font-sans text-[11px] font-semibold tracking-tight max-w-[130px] truncate">
+                    {currentTrack.title}
+                  </span>
+                </button>
+
+                {/* Live Mini Progress Bar + Elapsed/Total */}
+                <div className="hidden md:flex items-center gap-1.5 px-1">
+                  <span className="text-[10px] text-slate-400 tabular-nums">
+                    {formatMediaTime(musicPlayback.currentTime)}
+                  </span>
+                  <div className="w-14 h-1 rounded-full bg-white/15 overflow-hidden">
+                    <div
+                      className="h-full bg-[#93E6EE] transition-all duration-200"
+                      style={{
+                        width: `${
+                          musicPlayback.duration > 0
+                            ? Math.min(
+                                100,
+                                Math.max(
+                                  0,
+                                  (musicPlayback.currentTime / musicPlayback.duration) * 100
+                                )
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-slate-500 tabular-nums">
+                    {musicPlayback.duration > 0
+                      ? formatMediaTime(musicPlayback.duration)
+                      : '--:--'}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  data-sfx="confirm"
+                  onClick={prevTrack}
+                  className="p-0.5 text-slate-300 hover:text-white cursor-pointer"
+                  title="Previous Track"
+                  aria-label="Previous Track"
+                >
+                  <SkipBack className="w-3 h-3" />
+                </button>
+
+                <button
+                  type="button"
+                  data-sfx="none"
+                  onClick={() => {
+                    toggleRadio();
+                    soundEngine.playToggle(!settings.radioPlaying);
+                  }}
+                  className="p-0.5 text-slate-300 hover:text-white cursor-pointer"
+                  title={musicPlayback.isPlaying ? 'Pause Music' : 'Play Music'}
+                  aria-label={musicPlayback.isPlaying ? 'Pause Music' : 'Play Music'}
+                >
+                  {musicPlayback.isPlaying ? (
+                    <Pause className="w-3 h-3" />
+                  ) : (
+                    <Play className="w-3 h-3" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  data-sfx="confirm"
+                  onClick={nextTrack}
+                  className="p-0.5 text-slate-300 hover:text-white cursor-pointer"
+                  title="Next Track"
+                  aria-label="Next Track"
+                >
+                  <SkipForward className="w-3 h-3" />
+                </button>
+
+                <button
+                  type="button"
+                  data-sfx="none"
+                  onClick={() => {
+                    const nextMuted = !settings.muteMusic;
+                    updateSetting('muteMusic', nextMuted);
+                    soundEngine.playToggle(!nextMuted);
+                  }}
+                  className="p-0.5 text-slate-300 hover:text-white cursor-pointer"
+                  title={settings.muteMusic ? 'Unmute Music' : 'Mute Music'}
+                  aria-label={settings.muteMusic ? 'Unmute Music' : 'Mute Music'}
+                >
+                  {settings.muteMusic || !settings.musicEnabled ? (
+                    <VolumeX className="w-3 h-3 text-rose-300" />
+                  ) : (
+                    <Volume2 className="w-3 h-3 text-[#93E6EE]" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={cycleRepeatMode}
+                  className={`p-0.5 cursor-pointer ${
+                    settings.repeatMode !== 'off'
+                      ? 'text-[#EAB308]'
+                      : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  title={`Repeat Mode: ${settings.repeatMode.toUpperCase()}`}
+                  aria-label={`Repeat Mode: ${settings.repeatMode}`}
+                >
+                  {settings.repeatMode === 'one' ? (
+                    <Repeat1 className="w-3 h-3" />
+                  ) : (
+                    <Repeat className="w-3 h-3" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  data-sfx="none"
+                  onClick={() => {
+                    toggleShuffle();
+                    soundEngine.playToggle(!settings.shuffleMode);
+                  }}
+                  className={`p-0.5 cursor-pointer ${
+                    settings.shuffleMode
+                      ? 'text-[#93E6EE]'
+                      : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  title={`Shuffle: ${settings.shuffleMode ? 'ON' : 'OFF'}`}
+                  aria-label="Toggle Shuffle"
+                >
+                  <Shuffle className="w-3 h-3" />
+                </button>
+              </div>
+
+              {trackMenuOpen && (
+                <div className="absolute right-0 bottom-full mb-2 w-72 rounded-lg border border-white/15 bg-[#0E131B]/95 backdrop-blur-md shadow-2xl p-2 z-50 space-y-2">
+                  <div className="px-2 py-1 flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-slate-400 border-b border-white/[0.07]">
+                    <span>CM27 Soundtrack ({tracks.length} Tracks)</span>
+                    <span className="text-[#93E6EE]">{settings.repeatMode.toUpperCase()}</span>
+                  </div>
+
+                  {/* Interactive Seek Scrubber inside Playlist Popover */}
+                  <div className="px-2 space-y-1">
+                    <input
+                      type="range"
+                      aria-label="Footer seek music timeline"
+                      min={0}
+                      max={Math.max(1, Math.floor(musicPlayback.duration || 100))}
+                      value={Math.floor(
+                        musicPlayback.duration > 0 ? musicPlayback.currentTime : 0
+                      )}
+                      onChange={(e) => seekMusic(Number(e.target.value))}
+                      disabled={musicPlayback.duration <= 0}
+                      className="w-full accent-[#93E6EE] h-1 bg-white/15 rounded-full cursor-pointer disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 tabular-nums">
+                      <span>{formatMediaTime(musicPlayback.currentTime)}</span>
+                      <span className="truncate px-2 text-slate-300 font-sans">
+                        {currentTrack.artist}
+                      </span>
+                      <span>
+                        {musicPlayback.duration > 0
+                          ? formatMediaTime(musicPlayback.duration)
+                          : '--:--'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-0.5">
+                    {tracks.map((tr, idx) => {
+                      const active = idx === settings.trackIndex % tracks.length;
+                      return (
+                        <button
+                          key={tr.id}
+                          type="button"
+                          data-sfx="confirm"
+                          onClick={() => {
+                            selectTrack(idx);
+                            setTrackMenuOpen(false);
+                          }}
+                          className={`w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                            active
+                              ? 'bg-white/[0.12] text-white font-semibold'
+                              : 'text-slate-300 hover:bg-white/[0.06] hover:text-white'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-sans">{tr.title}</div>
+                            <div className="text-[10px] text-slate-400 font-sans truncate">
+                              {tr.artist}
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                            {active && musicPlayback.isPlaying
+                              ? 'PLAYING'
+                              : `${idx + 1}/${tracks.length}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <span className={wsConnected ? 'text-[#22C55E]' : 'text-[#EAB308]'}>
               {wsConnected ? 'Live Sync' : 'Reconnecting'}
             </span>
@@ -418,6 +736,7 @@ export function AppShell({
                 </div>
               </div>
               <button
+                data-sfx="menu-close"
                 onClick={() => setClubInfoModalOpen(false)}
                 className="p-1 text-slate-400 hover:text-white cursor-pointer"
               >
@@ -457,6 +776,7 @@ export function AppShell({
 
             <div className="flex justify-end gap-2 pt-2">
               <button
+                data-sfx="tab"
                 onClick={() => {
                   setClubInfoModalOpen(false);
                   handleSelectNav('franchises');
@@ -466,6 +786,7 @@ export function AppShell({
                 Switch / View Clubs
               </button>
               <button
+                data-sfx="menu-close"
                 onClick={() => setClubInfoModalOpen(false)}
                 className="px-4 py-2 rounded cm27-btn-dark-3d text-xs font-semibold cursor-pointer"
               >

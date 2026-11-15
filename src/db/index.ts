@@ -1,17 +1,26 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema.ts';
+import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
+import { DrizzleStore } from './drizzleStore.ts';
 
 declare global {
   var _postgresPool: Pool | undefined;
+  var _cm27DrizzleStore: DrizzleStore | undefined;
 }
 
-export const isDatabaseConfigured = Boolean(
+export const isPostgresConfigured = Boolean(
   process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_DB_NAME
 );
 
+export const isFirestoreConfigured = Boolean(
+  firebaseConfig?.projectId && firebaseConfig?.firestoreDatabaseId
+);
+
+export const isDatabaseConfigured = isPostgresConfigured || isFirestoreConfigured;
+
 export const createPool = () => {
-  if (!isDatabaseConfigured) {
+  if (!isPostgresConfigured) {
     return null;
   }
   if (!global._postgresPool) {
@@ -31,55 +40,15 @@ export const createPool = () => {
   return global._postgresPool;
 };
 
-function createMockDb(): ReturnType<typeof drizzle<typeof schema>> {
-  const createChainableQuery = (defaultResult: unknown = []): unknown => {
-    const resolved = Promise.resolve(defaultResult);
-    const proxy: unknown = new Proxy(() => createChainableQuery(defaultResult), {
-      get(_target, prop) {
-        if (prop === 'then') return resolved.then.bind(resolved);
-        if (prop === 'catch') return resolved.catch.bind(resolved);
-        if (prop === 'finally') return resolved.finally.bind(resolved);
-        if (prop === Symbol.toStringTag) return 'Promise';
-        return () => proxy;
-      },
-    });
-    return proxy;
-  };
-
-  const queryTableStub = {
-    findMany: async () => [],
-    findFirst: async () => null,
-    findUnique: async () => null,
-  };
-
-  const mockDb: unknown = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === 'query') {
-          return new Proxy({}, { get: () => queryTableStub });
-        }
-        if (prop === 'transaction') {
-          return async (cb: (tx: unknown) => Promise<unknown>) => cb(mockDb);
-        }
-        if (prop === 'execute') {
-          return async () => ({ rows: [] });
-        }
-        return () => createChainableQuery([]);
-      },
-    }
-  );
-
-  return mockDb as ReturnType<typeof drizzle<typeof schema>>;
+export function getFirestoreDrizzleStore(): DrizzleStore {
+  if (!global._cm27DrizzleStore) {
+    global._cm27DrizzleStore = new DrizzleStore();
+  }
+  return global._cm27DrizzleStore;
 }
 
 const pool = createPool();
 
-if (!pool) {
-  console.warn(
-    '[AI Studio] Cloud SQL is not configured (SQL_HOST missing) — using in-memory database mock.'
-  );
-}
-
-export const db = pool ? drizzle(pool, { schema }) : createMockDb();
-
+export const db: ReturnType<typeof drizzle<typeof schema>> = pool
+  ? drizzle(pool, { schema })
+  : (getFirestoreDrizzleStore().createDbClient() as ReturnType<typeof drizzle<typeof schema>>);

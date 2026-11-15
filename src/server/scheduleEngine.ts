@@ -40,17 +40,194 @@ function deterministicRand(seed: number): () => number {
 export function computeLeagueCalendar(league: {
   seasonStartedAt: Date | string;
   dayDurationSec: number;
+  currentGameDay?: number;
+  dayStartedAt?: Date | string;
+  nextAutoSimAt?: Date | string | null;
 }) {
   const dayDurationSec = Math.max(60, league.dayDurationSec || 600);
-  const startMs = new Date(league.seasonStartedAt || Date.now()).getTime();
-  const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-  const currentGameDay = Math.floor(elapsedSec / dayDurationSec) + 1;
-  const nextDayInSec = dayDurationSec - (elapsedSec % dayDurationSec);
+  const currentGameDay = Math.max(1, league.currentGameDay || 1);
+  const startDate = new Date(league.dayStartedAt || league.seasonStartedAt || Date.now());
+  const startMs = Number.isFinite(startDate.getTime()) ? startDate.getTime() : Date.now();
+  const nextAutoRaw = league.nextAutoSimAt ? new Date(league.nextAutoSimAt).getTime() : NaN;
+  const nextAutoSimAtMs = Number.isFinite(nextAutoRaw)
+    ? nextAutoRaw
+    : startMs + dayDurationSec * 1000;
+  const nextDayInSec = Math.max(0, Math.ceil((nextAutoSimAtMs - Date.now()) / 1000));
   return {
     dayDurationSec,
     currentGameDay,
     nextDayInSec,
+    dayStartedAt: new Date(startMs).toISOString(),
+    nextAutoSimAt: new Date(nextAutoSimAtMs).toISOString(),
   };
+}
+
+export function recalculateNextAutoSimAt(params: {
+  nowMs: number;
+  dayStartedAtMs: number;
+  newIntervalSec: number;
+}): number {
+  const intervalMs = Math.max(60, params.newIntervalSec || 600) * 1000;
+  const startMs = Number.isFinite(params.dayStartedAtMs) ? params.dayStartedAtMs : params.nowMs;
+  const candidate = startMs + intervalMs;
+  return candidate > params.nowMs ? candidate : params.nowMs + intervalMs;
+}
+
+export interface CalendarFixtureInput {
+  id: number;
+  scheduledDay: number;
+  status: string;
+  isHumanInvolved: boolean;
+}
+
+export interface CalendarAdvancePlan {
+  nextGameDay: number;
+  nextDayStartedAtMs: number;
+  nextAutoSimAtMs: number;
+  nextDayInSec: number;
+  dayAdvanced: boolean;
+  pausedForHumanMatch: boolean;
+  aiToSimulateIds: number[];
+  overdueHumanToSimulateIds: number[];
+}
+
+/**
+ * Global League Calendar state machine:
+ * - Global League Day (`currentGameDay`) advances strictly +1 day per elapsed real-world interval (`dayDurationSec`),
+ *   persisted via `nextAutoSimAt`. It never fast-forwards idle AI days and never stalls for offline managers.
+ * - AI vs AI fixtures simulate ONLY up to `nextGameDay` (`scheduledDay <= nextGameDay`), never ahead of the clock.
+ * - Human fixtures remain pending/accessible across days and are NEVER auto-simulated unless the league's
+ *   explicit inactivity rule (`inactivitySimEnabled`) is enabled and `inactivityTimeoutSec` has elapsed.
+ */
+export function evaluateGlobalCalendarTick(params: {
+  status: string;
+  currentGameDay: number;
+  dayStartedAtMs: number;
+  nextAutoSimAtMs?: number | null;
+  dayDurationSec: number;
+  inactivitySimEnabled?: boolean;
+  inactivityTimeoutSec?: number;
+  nowMs: number;
+  fixtures: CalendarFixtureInput[];
+}): CalendarAdvancePlan {
+  const dayDurationSec = Math.max(60, params.dayDurationSec || 600);
+  const intervalMs = dayDurationSec * 1000;
+  const initialDay = Math.max(1, params.currentGameDay || 1);
+  const initialStartMs = Number.isFinite(params.dayStartedAtMs)
+    ? params.dayStartedAtMs
+    : params.nowMs;
+  const rawNextMs =
+    params.nextAutoSimAtMs != null && Number.isFinite(params.nextAutoSimAtMs)
+      ? params.nextAutoSimAtMs
+      : initialStartMs + intervalMs;
+
+  if (params.status !== 'active') {
+    const nextDayInSec = Math.max(0, Math.ceil((rawNextMs - params.nowMs) / 1000));
+    return {
+      nextGameDay: initialDay,
+      nextDayStartedAtMs: initialStartMs,
+      nextAutoSimAtMs: rawNextMs,
+      nextDayInSec,
+      dayAdvanced: false,
+      pausedForHumanMatch: false,
+      aiToSimulateIds: [],
+      overdueHumanToSimulateIds: [],
+    };
+  }
+
+  let nextGameDay = initialDay;
+  let nextDayStartedAtMs = initialStartMs;
+  let nextAutoSimAtMs = rawNextMs;
+  let dayAdvanced = false;
+
+  if (params.nowMs >= rawNextMs) {
+    const stepsElapsed = Math.floor((params.nowMs - rawNextMs) / intervalMs) + 1;
+    nextGameDay = initialDay + stepsElapsed;
+    nextDayStartedAtMs = rawNextMs + (stepsElapsed - 1) * intervalMs;
+    nextAutoSimAtMs = rawNextMs + stepsElapsed * intervalMs;
+    dayAdvanced = true;
+  }
+
+  // Simulate ONLY AI-vs-AI fixtures whose scheduledDay <= Global League Day
+  const aiToSimulateIds = params.fixtures
+    .filter(
+      (f) =>
+        f.status === 'scheduled' &&
+        !f.isHumanInvolved &&
+        f.scheduledDay <= nextGameDay
+    )
+    .map((f) => f.id);
+
+  // Optional abandoned-fixture auto-sim only when league explicitly enables it
+  const overdueHumanToSimulateIds: number[] = [];
+  if (params.inactivitySimEnabled) {
+    const inactivityTimeoutMs = Math.max(3600, params.inactivityTimeoutSec || 86400) * 1000;
+    for (const f of params.fixtures) {
+      if (f.status === 'completed' || !f.isHumanInvolved) continue;
+      if (f.scheduledDay >= nextGameDay) continue;
+      const daysPast = nextGameDay - f.scheduledDay;
+      // When Day `scheduledDay` ended and `scheduledDay + 1` began:
+      const dueAtDayEndMs = nextDayStartedAtMs - (daysPast - 1) * intervalMs;
+      if (params.nowMs - dueAtDayEndMs >= inactivityTimeoutMs) {
+        overdueHumanToSimulateIds.push(f.id);
+      }
+    }
+  }
+
+  const nextDayInSec = Math.max(1, Math.ceil((nextAutoSimAtMs - params.nowMs) / 1000));
+  return {
+    nextGameDay,
+    nextDayStartedAtMs,
+    nextAutoSimAtMs,
+    nextDayInSec,
+    dayAdvanced,
+    pausedForHumanMatch: false,
+    aiToSimulateIds,
+    overdueHumanToSimulateIds,
+  };
+}
+
+export function computeTeamProgressions(
+  leagueTeams: Array<{ id: number }>,
+  leagueFixtures: Array<{
+    homeTeamId: number;
+    awayTeamId: number;
+    scheduledDay: number;
+    status: string;
+  }>,
+  currentGameDay: number
+) {
+  const safeGlobalDay = Math.max(1, currentGameDay || 1);
+  return leagueTeams.map((team) => {
+    const teamFixtures = leagueFixtures.filter(
+      (fx) => fx.homeTeamId === team.id || fx.awayTeamId === team.id
+    );
+    let playedCount = 0;
+    let pendingCount = 0;
+    let playedThroughDay = 0;
+    let nextPendingFixtureDay: number | null = null;
+
+    for (const fx of teamFixtures) {
+      if (fx.status === 'completed') {
+        playedCount += 1;
+        if (fx.scheduledDay > playedThroughDay) playedThroughDay = fx.scheduledDay;
+      } else {
+        pendingCount += 1;
+        if (nextPendingFixtureDay === null || fx.scheduledDay < nextPendingFixtureDay) {
+          nextPendingFixtureDay = fx.scheduledDay;
+        }
+      }
+    }
+
+    return {
+      teamId: team.id,
+      playedCount,
+      pendingCount,
+      playedThroughDay,
+      nextPendingFixtureDay,
+      daysAheadOfGlobal: Math.max(0, playedThroughDay - safeGlobalDay),
+    };
+  });
 }
 
 export function getCompetitionDefaultFormat(
@@ -422,8 +599,11 @@ export async function commitCompletedFixtureMatch(
   summary: MatchResultSummary,
   homeXIIds: number[],
   awayXIIds: number[],
-  initiatedByUid: string
+  initiatedByUid: string,
+  resolutionType: 'manual' | 'ai_vs_ai' | 'auto_inactivity' = 'manual'
 ) {
+  if (fx.status === 'completed' && fx.matchId) return null;
+
   const [league] = await db.select().from(leagues).where(eq(leagues.id, fx.leagueId)).limit(1);
   if (!league) return null;
 
@@ -452,6 +632,7 @@ export async function commitCompletedFixtureMatch(
       winnerTeamId: summary.winnerTeamId,
       marginText: summary.marginText,
       resultSummaryJson: summary,
+      resolutionType,
       createdByUid: initiatedByUid,
     })
     .returning();
@@ -461,6 +642,7 @@ export async function commitCompletedFixtureMatch(
     .set({
       status: 'completed',
       matchId: savedMatch.id,
+      resolutionType,
       tossWinnerTeamId: summary.tossWinnerTeamId,
       tossDecision: summary.tossDecision,
       coinResult: summary.coinResult,
@@ -648,108 +830,318 @@ export async function maybeAdvancePlayoffs(leagueId: number) {
  * (or league status is active), while NEVER auto-simulating human-involved fixtures AND keeping
  * AI teams synchronized within 2 matches of unplayed human fixtures on the calendar.
  */
-export async function processDueAiFixtures(leagueId: number, currentGameDay: number) {
-  const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
-  if (!league || league.status !== 'active') return;
-
-  const leagueTeams = await db.select().from(teams).where(eq(teams.leagueId, leagueId));
-  const teamMap = new Map(leagueTeams.map((t) => [t.id, t]));
-
-  const allLeagueFixtures = await db
+export async function getTeamRecentFormMap(
+  leagueId: number
+): Promise<Map<number, Array<'W' | 'L' | 'T'>>> {
+  const allMatches = await db
     .select()
-    .from(fixtures)
-    .where(eq(fixtures.leagueId, leagueId))
-    .orderBy(asc(fixtures.scheduledDay), asc(fixtures.matchNumber));
+    .from(matches)
+    .where(eq(matches.leagueId, leagueId))
+    .orderBy(asc(matches.createdAt));
 
-  const playedCountByTeam = new Map<number, number>();
-  for (const t of leagueTeams) playedCountByTeam.set(t.id, 0);
-
-  let earliestUnplayedHumanDay: number | null = null;
-  for (const fx of allLeagueFixtures) {
-    if (fx.stage === 'league' && fx.status === 'completed') {
-      playedCountByTeam.set(fx.homeTeamId, (playedCountByTeam.get(fx.homeTeamId) || 0) + 1);
-      playedCountByTeam.set(fx.awayTeamId, (playedCountByTeam.get(fx.awayTeamId) || 0) + 1);
-    } else if (fx.status !== 'completed') {
-      const h = teamMap.get(fx.homeTeamId);
-      const a = teamMap.get(fx.awayTeamId);
-      if (h?.ownerUid || a?.ownerUid) {
-        if (earliestUnplayedHumanDay === null || fx.scheduledDay < earliestUnplayedHumanDay) {
-          earliestUnplayedHumanDay = fx.scheduledDay;
-        }
-      }
+  const map = new Map<number, Array<'W' | 'L' | 'T'>>();
+  for (const m of allMatches) {
+    if (m.status !== 'completed') continue;
+    const hArr = map.get(m.homeTeamId) || [];
+    const aArr = map.get(m.awayTeamId) || [];
+    if (m.winnerTeamId === m.homeTeamId) {
+      hArr.unshift('W');
+      aArr.unshift('L');
+    } else if (m.winnerTeamId === m.awayTeamId) {
+      hArr.unshift('L');
+      aArr.unshift('W');
+    } else {
+      hArr.unshift('T');
+      aArr.unshift('T');
     }
+    map.set(m.homeTeamId, hArr.slice(0, 5));
+    map.set(m.awayTeamId, aArr.slice(0, 5));
+  }
+  return map;
+}
+
+const inProgressCalendarLeagues = new Set<number>();
+let lastGlobalCalendarSweepMs = 0;
+
+/**
+ * Synchronizes a league's Global League Day using its persisted real-world auto-simulation interval:
+ * - Advances Global League Day (+1 per elapsed interval) strictly by server clock (`nextAutoSimAt`).
+ * - Simulates ONLY AI-vs-AI fixtures up to `currentGameDay` (never ahead of the global clock).
+ * - Never overwrites completed matches or blocks other managers from playing ahead independently.
+ */
+export async function syncLeagueDayProgression(leagueId: number) {
+  const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  if (!league) {
+    const now = Date.now();
+    return {
+      dayDurationSec: 600,
+      currentGameDay: 1,
+      nextDayInSec: 600,
+      dayStartedAt: new Date(now).toISOString(),
+      nextAutoSimAt: new Date(now + 600_000).toISOString(),
+      inactivitySimEnabled: false,
+      inactivityTimeoutSec: 86400,
+      dayPausedForHumanMatch: false,
+    };
   }
 
-  const playedCounts = Array.from(playedCountByTeam.values());
-  const minPlayedAcrossTeams = playedCounts.length > 0 ? Math.min(...playedCounts) : 0;
+  const dayDurationSec = Math.max(60, league.dayDurationSec || 600);
+  const currentDay = Math.max(1, (league as any).currentGameDay || 1);
+  const dayStartedDate = new Date((league as any).dayStartedAt || league.seasonStartedAt || Date.now());
+  const dayStartMs = Number.isFinite(dayStartedDate.getTime()) ? dayStartedDate.getTime() : Date.now();
+  const nextAutoRaw = (league as any).nextAutoSimAt
+    ? new Date((league as any).nextAutoSimAt).getTime()
+    : NaN;
+  const nextAutoAtMs = Number.isFinite(nextAutoRaw)
+    ? nextAutoRaw
+    : dayStartMs + dayDurationSec * 1000;
+  const inactivitySimEnabled = Boolean((league as any).inactivitySimEnabled);
+  const inactivityTimeoutSec = Math.max(3600, Number((league as any).inactivityTimeoutSec) || 86400);
 
-  const dueFixtures = allLeagueFixtures.filter((fx) => fx.status === 'scheduled');
-  const aiDue = dueFixtures.filter((fx) => {
-    if (fx.scheduledDay > currentGameDay) return false;
-    const h = teamMap.get(fx.homeTeamId);
-    const a = teamMap.get(fx.awayTeamId);
-    if (!h || !a || h.ownerUid || a.ownerUid) return false;
+  if (league.status !== 'active') {
+    return {
+      dayDurationSec,
+      currentGameDay: currentDay,
+      nextDayInSec: Math.max(0, Math.ceil((nextAutoAtMs - Date.now()) / 1000)),
+      dayStartedAt: new Date(dayStartMs).toISOString(),
+      nextAutoSimAt: new Date(nextAutoAtMs).toISOString(),
+      inactivitySimEnabled,
+      inactivityTimeoutSec,
+      dayPausedForHumanMatch: false,
+    };
+  }
 
-    // Schedule Synchronization Guard: pause AI matches when lagging human fixtures would fall >2 matches behind
-    if (earliestUnplayedHumanDay !== null && fx.scheduledDay > earliestUnplayedHumanDay + 2) {
-      return false;
+  // Prevent concurrent execution for the same league
+  if (inProgressCalendarLeagues.has(leagueId)) {
+    return {
+      dayDurationSec,
+      currentGameDay: currentDay,
+      nextDayInSec: Math.max(0, Math.ceil((nextAutoAtMs - Date.now()) / 1000)),
+      dayStartedAt: new Date(dayStartMs).toISOString(),
+      nextAutoSimAt: new Date(nextAutoAtMs).toISOString(),
+      inactivitySimEnabled,
+      inactivityTimeoutSec,
+      dayPausedForHumanMatch: false,
+    };
+  }
+
+  inProgressCalendarLeagues.add(leagueId);
+  try {
+    const [freshLeague] = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+    if (!freshLeague || freshLeague.status !== 'active') {
+      return {
+        dayDurationSec,
+        currentGameDay: currentDay,
+        nextDayInSec: Math.max(0, Math.ceil((nextAutoAtMs - Date.now()) / 1000)),
+        dayStartedAt: new Date(dayStartMs).toISOString(),
+        nextAutoSimAt: new Date(nextAutoAtMs).toISOString(),
+        inactivitySimEnabled,
+        inactivityTimeoutSec,
+        dayPausedForHumanMatch: false,
+      };
     }
-    const hPlayed = playedCountByTeam.get(h.id) || 0;
-    const aPlayed = playedCountByTeam.get(a.id) || 0;
-    if (fx.stage === 'league' && (hPlayed >= minPlayedAcrossTeams + 2 || aPlayed >= minPlayedAcrossTeams + 2)) {
-      return false;
-    }
-    return true;
-  });
 
-  if (aiDue.length === 0) return;
-
-  const allLeaguePlayers = await db.select().from(players).where(eq(players.leagueId, leagueId));
-  for (const fx of aiDue.slice(0, 3)) {
-    const homeTeam = teamMap.get(fx.homeTeamId)!;
-    const awayTeam = teamMap.get(fx.awayTeamId)!;
-    const hPlayed = playedCountByTeam.get(homeTeam.id) || 0;
-    const aPlayed = playedCountByTeam.get(awayTeam.id) || 0;
-    if (fx.stage === 'league' && (hPlayed >= minPlayedAcrossTeams + 2 || aPlayed >= minPlayedAcrossTeams + 2)) {
-      continue;
-    }
-
-    const homeXI = await resolveFixtureTeamXI(leagueId, homeTeam, allLeaguePlayers, undefined, fx.format);
-    const awayXI = await resolveFixtureTeamXI(leagueId, awayTeam, allLeaguePlayers, undefined, fx.format);
-
-    const summary = simulateCricketMatch({
-      homeTeam,
-      awayTeam,
-      homeXI,
-      awayXI,
-      format: (fx.format as any) || 'T20',
-      pitchCondition: fx.pitchCondition,
-      userCall: 'heads',
-      userDecisionIfWon: 'bat',
-    });
-
-    await commitCompletedFixtureMatch(
-      fx,
-      summary,
-      homeXI.map((p) => p.id),
-      awayXI.map((p) => p.id),
-      league.hostUid
+    const freshDurationSec = Math.max(60, freshLeague.dayDurationSec || 600);
+    const freshCurrentDay = Math.max(1, (freshLeague as any).currentGameDay || 1);
+    const freshStartDate = new Date(
+      (freshLeague as any).dayStartedAt || freshLeague.seasonStartedAt || Date.now()
+    );
+    const freshStartMs = Number.isFinite(freshStartDate.getTime())
+      ? freshStartDate.getTime()
+      : Date.now();
+    const freshNextRaw = (freshLeague as any).nextAutoSimAt
+      ? new Date((freshLeague as any).nextAutoSimAt).getTime()
+      : NaN;
+    const hadPersistedNextAuto = Number.isFinite(freshNextRaw);
+    const freshNextAtMs = hadPersistedNextAuto
+      ? freshNextRaw
+      : freshStartMs + freshDurationSec * 1000;
+    const freshInactivityEnabled = Boolean((freshLeague as any).inactivitySimEnabled);
+    const freshInactivitySec = Math.max(
+      3600,
+      Number((freshLeague as any).inactivityTimeoutSec) || 86400
     );
 
-    if (fx.stage === 'league') {
-      playedCountByTeam.set(homeTeam.id, hPlayed + 1);
-      playedCountByTeam.set(awayTeam.id, aPlayed + 1);
+    const leagueTeams = await db.select().from(teams).where(eq(teams.leagueId, leagueId));
+    const teamMap = new Map(leagueTeams.map((t) => [t.id, t]));
+    const allLeagueFixtures = await db
+      .select()
+      .from(fixtures)
+      .where(eq(fixtures.leagueId, leagueId))
+      .orderBy(asc(fixtures.scheduledDay), asc(fixtures.matchNumber));
+
+    const nowMs = Date.now();
+    const plan = evaluateGlobalCalendarTick({
+      status: freshLeague.status,
+      currentGameDay: freshCurrentDay,
+      dayStartedAtMs: freshStartMs,
+      nextAutoSimAtMs: freshNextAtMs,
+      dayDurationSec: freshDurationSec,
+      inactivitySimEnabled: freshInactivityEnabled,
+      inactivityTimeoutSec: freshInactivitySec,
+      nowMs,
+      fixtures: allLeagueFixtures.map((fx) => {
+        const h = teamMap.get(fx.homeTeamId);
+        const a = teamMap.get(fx.awayTeamId);
+        return {
+          id: fx.id,
+          scheduledDay: fx.scheduledDay,
+          status: fx.status,
+          isHumanInvolved: Boolean(h?.ownerUid || a?.ownerUid),
+        };
+      }),
+    });
+
+    if (
+      plan.nextGameDay !== freshCurrentDay ||
+      !hadPersistedNextAuto ||
+      Math.abs(plan.nextAutoSimAtMs - freshNextAtMs) > 1000 ||
+      Math.abs(plan.nextDayStartedAtMs - freshStartMs) > 1000
+    ) {
+      await db
+        .update(leagues)
+        .set({
+          currentGameDay: plan.nextGameDay,
+          dayStartedAt: new Date(plan.nextDayStartedAtMs),
+          nextAutoSimAt: new Date(plan.nextAutoSimAtMs),
+        })
+        .where(eq(leagues.id, leagueId));
+    }
+
+    let simulatedAny = false;
+    if (plan.aiToSimulateIds.length > 0 || plan.overdueHumanToSimulateIds.length > 0) {
+      const fixtureById = new Map(allLeagueFixtures.map((f) => [f.id, f]));
+      const allLeaguePlayers = await db.select().from(players).where(eq(players.leagueId, leagueId));
+      const formMap = await getTeamRecentFormMap(leagueId);
+
+      for (const fxId of plan.aiToSimulateIds) {
+        const fx = fixtureById.get(fxId);
+        if (!fx || fx.status !== 'scheduled') continue;
+        const homeTeam = teamMap.get(fx.homeTeamId);
+        const awayTeam = teamMap.get(fx.awayTeamId);
+        if (!homeTeam || !awayTeam) continue;
+
+        const homeXI = await resolveFixtureTeamXI(leagueId, homeTeam, allLeaguePlayers, undefined, fx.format);
+        const awayXI = await resolveFixtureTeamXI(leagueId, awayTeam, allLeaguePlayers, undefined, fx.format);
+        const homeForm = formMap.get(homeTeam.id) || [];
+        const awayForm = formMap.get(awayTeam.id) || [];
+
+        const summary = simulateCricketMatch({
+          homeTeam,
+          awayTeam,
+          homeXI,
+          awayXI,
+          format: (fx.format as any) || 'T20',
+          pitchCondition: fx.pitchCondition,
+          userCall: 'heads',
+          userDecisionIfWon: 'bat',
+          homeForm,
+          awayForm,
+        });
+
+        await commitCompletedFixtureMatch(
+          fx,
+          summary,
+          homeXI.map((p) => p.id),
+          awayXI.map((p) => p.id),
+          freshLeague.hostUid,
+          'ai_vs_ai'
+        );
+        simulatedAny = true;
+
+        if (summary.winnerTeamId === homeTeam.id) {
+          formMap.set(homeTeam.id, (['W', ...homeForm] as ('W' | 'L' | 'T')[]).slice(0, 5));
+          formMap.set(awayTeam.id, (['L', ...awayForm] as ('W' | 'L' | 'T')[]).slice(0, 5));
+        } else if (summary.winnerTeamId === awayTeam.id) {
+          formMap.set(homeTeam.id, (['L', ...homeForm] as ('W' | 'L' | 'T')[]).slice(0, 5));
+          formMap.set(awayTeam.id, (['W', ...awayForm] as ('W' | 'L' | 'T')[]).slice(0, 5));
+        } else {
+          formMap.set(homeTeam.id, (['T', ...homeForm] as ('W' | 'L' | 'T')[]).slice(0, 5));
+          formMap.set(awayTeam.id, (['T', ...awayForm] as ('W' | 'L' | 'T')[]).slice(0, 5));
+        }
+      }
+
+      for (const fxId of plan.overdueHumanToSimulateIds) {
+        const fx = fixtureById.get(fxId);
+        if (!fx || fx.status === 'completed') continue;
+        await simulateScheduledFixtureWithSavedTactics(
+          fx,
+          freshLeague.hostUid,
+          formMap,
+          'auto_inactivity'
+        );
+        simulatedAny = true;
+      }
+    }
+
+    if (plan.dayAdvanced || simulatedAny) {
+      wsHub.broadcastToLeague(leagueId, 'league:updated', {
+        currentGameDay: plan.nextGameDay,
+        dayStartedAt: new Date(plan.nextDayStartedAtMs).toISOString(),
+        nextAutoSimAt: new Date(plan.nextAutoSimAtMs).toISOString(),
+        dayDurationSec: freshDurationSec,
+        nextDayInSec: plan.nextDayInSec,
+        dayAdvanced: plan.dayAdvanced,
+      });
+    }
+
+    return {
+      dayDurationSec: freshDurationSec,
+      currentGameDay: plan.nextGameDay,
+      nextDayInSec: plan.nextDayInSec,
+      dayStartedAt: new Date(plan.nextDayStartedAtMs).toISOString(),
+      nextAutoSimAt: new Date(plan.nextAutoSimAtMs).toISOString(),
+      inactivitySimEnabled: freshInactivityEnabled,
+      inactivityTimeoutSec: freshInactivitySec,
+      dayPausedForHumanMatch: false,
+    };
+  } finally {
+    inProgressCalendarLeagues.delete(leagueId);
+  }
+}
+
+/**
+ * Persistent server-side auto-simulation ticker:
+ * Checks all active leagues (throttled to every 2 seconds) and triggers auto-advancement
+ * even when all human managers are offline. Safe across restarts & multi-step catch-ups.
+ */
+export async function tickGlobalLeagueCalendars(force = false) {
+  const nowMs = Date.now();
+  if (!force && nowMs - lastGlobalCalendarSweepMs < 2000) return;
+  lastGlobalCalendarSweepMs = nowMs;
+
+  const activeLeagues = await db
+    .select()
+    .from(leagues)
+    .where(eq(leagues.status, 'active'));
+
+  for (const league of activeLeagues) {
+    const nextAutoAt = (league as any).nextAutoSimAt
+      ? new Date((league as any).nextAutoSimAt).getTime()
+      : NaN;
+    if (force || !Number.isFinite(nextAutoAt) || nowMs >= nextAutoAt) {
+      await ensureLeagueScheduleExists(league.id);
+      await syncLeagueDayProgression(league.id);
     }
   }
 }
 
 /**
- * Simulates a stalled/inactive scheduled fixture using both clubs' saved Playing XI (`lineups` table)
- * and saved `tacticsJson` when managers vote to advance an overdue human match.
+ * Legacy helper retained for direct calls; delegates to syncLeagueDayProgression.
+ */
+export async function processDueAiFixtures(leagueId: number, _currentGameDay?: number) {
+  return syncLeagueDayProgression(leagueId);
+}
+
+/**
+ * Simulates a stalled/inactive scheduled fixture using both clubs' saved Playing XI (`lineups` table),
+ * saved `tacticsJson`, recent league form, and chance variance.
  */
 export async function simulateScheduledFixtureWithSavedTactics(
   fx: typeof fixtures.$inferSelect,
-  initiatedByUid: string
+  initiatedByUid: string,
+  preloadedFormMap?: Map<number, Array<'W' | 'L' | 'T'>>,
+  resolutionType: 'manual' | 'ai_vs_ai' | 'auto_inactivity' = 'auto_inactivity'
 ) {
   const leagueTeams = await db.select().from(teams).where(eq(teams.leagueId, fx.leagueId));
   const homeTeam = leagueTeams.find((t) => t.id === fx.homeTeamId);
@@ -776,6 +1168,10 @@ export async function simulateScheduledFixtureWithSavedTactics(
     fx.format
   );
 
+  const formMap = preloadedFormMap || (await getTeamRecentFormMap(fx.leagueId));
+  const homeForm = formMap.get(homeTeam.id) || [];
+  const awayForm = formMap.get(awayTeam.id) || [];
+
   const summary = simulateCricketMatch({
     homeTeam,
     awayTeam,
@@ -785,6 +1181,8 @@ export async function simulateScheduledFixtureWithSavedTactics(
     pitchCondition: fx.pitchCondition,
     userCall: 'heads',
     userDecisionIfWon: 'bat',
+    homeForm,
+    awayForm,
   });
 
   const savedMatch = await commitCompletedFixtureMatch(
@@ -792,7 +1190,8 @@ export async function simulateScheduledFixtureWithSavedTactics(
     summary,
     homeXI.map((p) => p.id),
     awayXI.map((p) => p.id),
-    initiatedByUid
+    initiatedByUid,
+    resolutionType
   );
 
   return { savedMatch, summary, homeTeam, awayTeam };

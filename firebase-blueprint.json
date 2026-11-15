@@ -1,0 +1,134 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Private user account identity linked to Firebase Authentication UID.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer", "description": "Numeric surrogate user ID." },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Firebase Auth UID." },
+        "email": { "type": "string", "format": "email", "maxLength": 320, "description": "User email address." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp." }
+      },
+      "required": ["id", "uid", "email", "createdAt"]
+    },
+    "ManagerProfile": {
+      "title": "ManagerProfile",
+      "description": "Cricket manager persona, background, preferred currency, and reputation.",
+      "type": "object",
+      "properties": {
+        "userUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "managerName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "firstName": { "type": "string", "maxLength": 60 },
+        "lastName": { "type": "string", "maxLength": 60 },
+        "preferredName": { "type": "string", "maxLength": 80 },
+        "country": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "preferredCurrency": { "type": "string", "enum": ["INR", "GBP", "USD", "AUD"] },
+        "favoriteFormat": { "type": "string", "enum": ["T20", "ODI", "Test"] },
+        "avatarUrl": { "type": "string", "maxLength": 512 },
+        "bio": { "type": "string", "maxLength": 500 },
+        "reputation": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userUid", "managerName", "country", "favoriteFormat", "avatarUrl", "updatedAt"]
+    },
+    "League": {
+      "title": "League",
+      "description": "Multiplayer cricket management league metadata and membership roster.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "name": { "type": "string", "minLength": 3, "maxLength": 100 },
+        "inviteCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9]+$" },
+        "hostUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "primaryCompetition": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["setup", "auction", "active"] },
+        "memberUids": { "type": "array", "description": "Bounded list of participating Firebase UIDs (max 12)." },
+        "leagueJson": { "type": "string", "description": "Serialized league settings row." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "inviteCode", "hostUid", "status", "memberUids", "updatedAt"]
+    },
+    "LeagueStateSection": {
+      "title": "LeagueStateSection",
+      "description": "Partitioned league state payload (members/teams, players/contracts, auction, matches/fixtures, comms).",
+      "type": "object",
+      "properties": {
+        "section": { "type": "string", "enum": ["core", "players", "auction", "matches", "comms"] },
+        "payloadJson": { "type": "string", "maxLength": 900000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["section", "payloadJson", "updatedAt"]
+    },
+    "LeagueInvite": {
+      "title": "LeagueInvite",
+      "description": "Invite code directory entry enabling authenticated managers to locate and join a league.",
+      "type": "object",
+      "properties": {
+        "inviteCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9]+$" },
+        "leagueId": { "type": "integer" },
+        "leagueName": { "type": "string", "maxLength": 100 },
+        "hostUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["inviteCode", "leagueId", "leagueName", "hostUid", "updatedAt"]
+    },
+    "Friendship": {
+      "title": "Friendship",
+      "description": "Friend relationship between two managers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "requesterUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "addresseeUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "status": { "type": "string", "enum": ["pending", "accepted"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "requesterUid", "addresseeUid", "status", "updatedAt"]
+    },
+    "DirectMessage": {
+      "title": "DirectMessage",
+      "description": "Direct message or league invite sent between two managers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "senderUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recipientUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "senderUid", "recipientUid", "body", "isRead", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Private user account document keyed by Firebase UID."
+    },
+    "/profiles/{uid}": {
+      "schema": { "$ref": "#/entities/ManagerProfile" },
+      "description": "Manager profile keyed by Firebase UID."
+    },
+    "/leagues/{leagueId}": {
+      "schema": { "$ref": "#/entities/League" },
+      "description": "League root document with member roster."
+    },
+    "/leagues/{leagueId}/state/{section}": {
+      "schema": { "$ref": "#/entities/LeagueStateSection" },
+      "description": "Partitioned league relational state sections."
+    },
+    "/leagueInvites/{inviteCode}": {
+      "schema": { "$ref": "#/entities/LeagueInvite" },
+      "description": "Invite lookup document for joining leagues by invite code."
+    },
+    "/friendships/{friendshipId}": {
+      "schema": { "$ref": "#/entities/Friendship" },
+      "description": "Manager friendship records."
+    },
+    "/directMessages/{messageId}": {
+      "schema": { "$ref": "#/entities/DirectMessage" },
+      "description": "Manager direct messages."
+    }
+  }
+}

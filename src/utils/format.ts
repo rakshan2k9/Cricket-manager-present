@@ -40,6 +40,63 @@ export function formatClockTime(isoDate: string): string {
   return new Date(isoDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+export const DEFAULT_AUTO_SIM_INTERVAL_SEC = 600;
+
+export const AUTO_SIM_INTERVAL_OPTIONS: ReadonlyArray<{
+  seconds: number;
+  label: string;
+  shortLabel: string;
+}> = [
+  { seconds: 300, label: '5 minutes', shortLabel: '5m' },
+  { seconds: 600, label: '10 minutes', shortLabel: '10m' },
+  { seconds: 900, label: '15 minutes', shortLabel: '15m' },
+  { seconds: 1200, label: '20 minutes', shortLabel: '20m' },
+  { seconds: 1800, label: '30 minutes', shortLabel: '30m' },
+  { seconds: 3600, label: '1 hour', shortLabel: '1h' },
+  { seconds: 7200, label: '2 hours', shortLabel: '2h' },
+  { seconds: 21600, label: '6 hours', shortLabel: '6h' },
+  { seconds: 43200, label: '12 hours', shortLabel: '12h' },
+  { seconds: 86400, label: '24 hours', shortLabel: '24h' },
+];
+
+export const VALID_AUTO_SIM_INTERVAL_SET = new Set<number>(
+  AUTO_SIM_INTERVAL_OPTIONS.map((opt) => opt.seconds)
+);
+
+export function isValidAutoSimIntervalSec(value: unknown): value is number {
+  const num = Number(value);
+  return Number.isInteger(num) && VALID_AUTO_SIM_INTERVAL_SET.has(num);
+}
+
+export function normalizeAutoSimIntervalSec(value: unknown): number {
+  const num = Number(value);
+  if (Number.isInteger(num) && VALID_AUTO_SIM_INTERVAL_SET.has(num)) return num;
+  return DEFAULT_AUTO_SIM_INTERVAL_SEC;
+}
+
+export function formatAutoSimIntervalLabel(seconds?: number | null): string {
+  const sec = Number(seconds || DEFAULT_AUTO_SIM_INTERVAL_SEC);
+  const found = AUTO_SIM_INTERVAL_OPTIONS.find((opt) => opt.seconds === sec);
+  if (found) return found.label;
+  if (sec >= 3600) {
+    const hrs = Math.round((sec / 3600) * 10) / 10;
+    return `${hrs} hour${hrs === 1 ? '' : 's'}`;
+  }
+  const mins = Math.max(1, Math.round(sec / 60));
+  return `${mins} minute${mins === 1 ? '' : 's'}`;
+}
+
+export function formatCountdownDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  if (hrs > 0) {
+    return `${hrs}h ${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
 export function getPlayerFormDelta(p: {
   currentForm?: number;
   formDelta?: number;

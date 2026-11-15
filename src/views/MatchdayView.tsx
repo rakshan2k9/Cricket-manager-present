@@ -54,6 +54,7 @@ import { TeamCrest } from '../components/TeamCrest';
 import { CyanPlayerCard } from '../components/CyanPlayerCard';
 import { PressConferenceModal } from '../components/PressConferenceModal';
 import type { ActiveTab } from '../components/AppShell';
+import { soundEngine } from '../utils/soundEngine';
 import {
   buildKeyMomentDilemma,
   clampMomentum,
@@ -762,37 +763,49 @@ export function MatchdayView({
   });
   const [pvpBusy, setPvpBusy] = useState(false);
 
-  // Live 10-minute Game Day clock
+  // Live Global League Day clock (authoritative server `nextAutoSimAt`)
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
   const dayDurationSec = Math.max(60, state.league.dayDurationSec || 600);
-  const { currentGameDay, nextDayInSec } = useMemo(() => {
-    if (!state.league.seasonStartedAt) {
-      return {
-        currentGameDay: state.currentGameDay || 1,
-        nextDayInSec: state.nextDayInSec || dayDurationSec,
-      };
+  const currentGameDay = state.currentGameDay || state.league.currentGameDay || 1;
+  const myProgression = state.myProgression || null;
+  const nextDayInSec = useMemo(() => {
+    const nextAutoIso = state.nextAutoSimAt || state.league.nextAutoSimAt;
+    if (nextAutoIso) {
+      const targetMs = new Date(nextAutoIso).getTime();
+      if (Number.isFinite(targetMs)) {
+        return Math.max(0, Math.ceil((targetMs - nowMs) / 1000));
+      }
     }
-    const startMs = new Date(state.league.seasonStartedAt).getTime();
-    if (!Number.isFinite(startMs)) {
-      return {
-        currentGameDay: state.currentGameDay || 1,
-        nextDayInSec: state.nextDayInSec || dayDurationSec,
-      };
-    }
+    const anchorIso =
+      state.dayStartedAt || state.league.dayStartedAt || state.league.seasonStartedAt;
+    if (!anchorIso) return state.nextDayInSec ?? dayDurationSec;
+    const startMs = new Date(anchorIso).getTime();
+    if (!Number.isFinite(startMs)) return state.nextDayInSec ?? dayDurationSec;
     const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
-    return {
-      currentGameDay: Math.floor(elapsedSec / dayDurationSec) + 1,
-      nextDayInSec: dayDurationSec - (elapsedSec % dayDurationSec),
-    };
-  }, [nowMs, state.league.seasonStartedAt, dayDurationSec, state.currentGameDay, state.nextDayInSec]);
+    return Math.max(0, dayDurationSec - elapsedSec);
+  }, [
+    nowMs,
+    state.nextAutoSimAt,
+    state.league.nextAutoSimAt,
+    state.dayStartedAt,
+    state.league.dayStartedAt,
+    state.league.seasonStartedAt,
+    dayDurationSec,
+    state.nextDayInSec,
+  ]);
 
-  const countdownLabel = `${String(Math.floor(nextDayInSec / 60)).padStart(2, '0')}:${String(
-    nextDayInSec % 60
-  ).padStart(2, '0')}`;
+  const countdownLabel =
+    nextDayInSec >= 3600
+      ? `${Math.floor(nextDayInSec / 3600)}h ${String(
+          Math.floor((nextDayInSec % 3600) / 60)
+        ).padStart(2, '0')}m ${String(nextDayInSec % 60).padStart(2, '0')}s`
+      : `${String(Math.floor(nextDayInSec / 60)).padStart(2, '0')}:${String(
+          nextDayInSec % 60
+        ).padStart(2, '0')}`;
 
   const allowedFormats = useMemo(
     () => getLeagueFormats(myTeam?.leagueCategory, state.league.primaryCompetition),
@@ -819,6 +832,8 @@ export function MatchdayView({
   const [dragPlayerId, setDragPlayerId] = useState<number | null>(null);
   const [dragOverId, setDragOverId] = useState<number | null>(null);
   const [spotlightPlayer, setSpotlightPlayer] = useState<Player | null>(null);
+  const [compareCenterMode, setCompareCenterMode] = useState<'comparison' | 'player'>('comparison');
+  const [simulatingInstantMatch, setSimulatingInstantMatch] = useState(false);
 
   // Automatic Toss State for Stage 3
   const [coinOutcome, setCoinOutcome] = useState<'heads' | 'tails' | null>(null);
@@ -856,6 +871,10 @@ export function MatchdayView({
       setAwayTeamId(opponents[0].id);
     }
   }, [awayTeamId, myTeam?.id, opponents]);
+
+  useEffect(() => {
+    setCompareCenterMode('comparison');
+  }, [awayTeamId]);
 
   const fetchPreview = useCallback(async () => {
     if (!myTeam || !awayTeamId || myTeam.id === awayTeamId) return;
@@ -906,8 +925,8 @@ export function MatchdayView({
   const squadMap = useMemo(() => {
     const map = new Map<number, Player>();
     if (preview) {
-      for (const p of preview.homeSquadAll) map.set(p.id, p);
-      for (const p of preview.homeXI) map.set(p.id, p);
+      for (const p of preview.homeSquadAll || []) map.set(p.id, p);
+      for (const p of preview.homeXI || []) map.set(p.id, p);
     }
     return map;
   }, [preview]);
@@ -920,7 +939,7 @@ export function MatchdayView({
   const droppedReserves = useMemo(() => {
     if (!preview) return [];
     const selectedSet = new Set(homeLineupIds);
-    return preview.homeSquadAll.filter((p) => !selectedSet.has(p.id));
+    return (preview.homeSquadAll || []).filter((p) => !selectedSet.has(p.id));
   }, [preview, homeLineupIds]);
 
   const persistHomeLineup = async (
@@ -1086,7 +1105,7 @@ export function MatchdayView({
 
   const handleAutoPickBalanced = () => {
     if (!preview) return;
-    const all = [...preview.homeSquadAll].sort((a, b) => getPlayerOverall(b) - getPlayerOverall(a));
+    const all = [...(preview.homeSquadAll || [])].sort((a, b) => getPlayerOverall(b) - getPlayerOverall(a));
     const wk = all.find((p) => p.primaryRole === 'Wicketkeeper');
     const bowlers = all.filter((p) => p.primaryRole === 'Bowler').slice(0, 4);
     const chosen: Player[] = [];
@@ -1138,8 +1157,70 @@ export function MatchdayView({
   }, [preview, myTeam, format]);
 
   const enterTossStage = () => {
+    soundEngine.playConfirm();
     setStage('toss');
     runAutoToss();
+  };
+
+  const handleInstantCompareSimulate = async () => {
+    if (!preview || !myTeam || simulatingInstantMatch) return;
+    if (preview.awayTeam.ownerUid) {
+      onToast({
+        tone: 'info',
+        title: 'PvP Fixture',
+        body: 'Human-vs-human matches must be played in the Live PvP Room.',
+      });
+      return;
+    }
+    soundEngine.playConfirm();
+    setSimulatingInstantMatch(true);
+    try {
+      const res = await apiFetch<{ match: MatchRecord }>(
+        `/api/leagues/${state.league.id}/matches/play`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            homeTeamId: myTeam.id,
+            awayTeamId: preview.awayTeam.id,
+            fixtureId: selectedFixtureId || undefined,
+            format,
+            homeLineupIds,
+          }),
+        }
+      );
+      setCompletedMatch(res.match);
+      setActiveScorecardInnings(1);
+      setSelectedFixtureId(null);
+      setSimState({
+        inningsNumber: 2,
+        targetRuns: null,
+        maxBallsPerInnings: format === 'Hundred' ? 100 : format === 'ODI' ? 300 : format === 'Test' ? 360 : 120,
+        ballsPerOver: format === 'Hundred' ? 5 : 6,
+        innings1: {} as any,
+        innings2: {} as any,
+        completedInnings1Summary: null,
+        commentary: [],
+        highlights: [],
+        droppedCatches: [],
+        turningPoints: [],
+        momentum: 0,
+        activeModifiers: null,
+        triggeredMomentIds: [],
+        forcedNextBowlerIdx: null,
+        finished: true,
+      });
+      setStage('sim');
+      await Promise.all([onRefreshState(), fetchPreview()]);
+      onToast({
+        tone: 'success',
+        title: `${myTeam.shortCode} vs ${preview.awayTeam.shortCode} Simulated`,
+        body: res.match.marginText,
+      });
+    } catch (err: any) {
+      onToast({ tone: 'error', title: 'Simulation Failed', body: err.message });
+    } finally {
+      setSimulatingInstantMatch(false);
+    }
   };
 
   // Resolve batting order for Innings 1 & Innings 2 after auto toss
@@ -1150,9 +1231,9 @@ export function MatchdayView({
       (homeWonToss && tossDecision === 'bat') || (!homeWonToss && tossDecision === 'bowl');
 
     const firstBatTeam = homeBatsFirst ? preview.homeTeam : preview.awayTeam;
-    const firstBatXI = homeBatsFirst ? activeHomeXI : preview.awayXI;
+    const firstBatXI = homeBatsFirst ? activeHomeXI : (preview.awayXI || []);
     const firstBowlTeam = homeBatsFirst ? preview.awayTeam : preview.homeTeam;
-    const firstBowlXI = homeBatsFirst ? preview.awayXI : activeHomeXI;
+    const firstBowlXI = homeBatsFirst ? (preview.awayXI || []) : activeHomeXI;
 
     return {
       firstBatTeam,
@@ -1819,11 +1900,21 @@ export function MatchdayView({
       {/* Top Matchday Calendar & Sub-View Switcher */}
       <div className="cm27-panel px-4 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="px-3 py-1.5 cm27-panel-inset flex items-center gap-2 text-xs font-mono text-[#93E6EE] tabular-nums">
+          <div className="px-3 py-1.5 cm27-panel-inset flex flex-wrap items-center gap-2 text-xs font-mono text-[#93E6EE] tabular-nums">
             <Clock className="w-3.5 h-3.5 text-[#EAB308]" />
-            <span className="font-bold">SEASON 1 · DAY {currentGameDay}</span>
-            <span className="text-slate-400">({countdownLabel} next day)</span>
+            <span className="font-bold">GLOBAL DAY {currentGameDay}</span>
+            <span className="text-slate-400">
+              (Next Auto-Sim: {countdownLabel})
+            </span>
           </div>
+          {myProgression && (
+            <div className="px-3 py-1.5 cm27-panel-inset text-xs font-mono text-slate-200 tabular-nums">
+              My Progress: <strong className="text-[#4ADE80]">Day {myProgression.playedThroughDay}</strong>
+              {myProgression.daysAheadOfGlobal > 0 && (
+                <span className="text-[#93E6EE]"> (+{myProgression.daysAheadOfGlobal} ahead)</span>
+              )}
+            </div>
+          )}
 
           {myLiveOrNextPvpFixture && (
             <button
@@ -1876,7 +1967,7 @@ export function MatchdayView({
                 AUTOMATED IPL-FORMAT TOURNAMENT SCHEDULE
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Each club faces 4 seeded rivals twice and remaining rivals once · AI vs AI fixtures auto-resolve as fast calendar days pass (10 min/day) · Friend matches require real-time PvP.
+                Global League Day advances strictly on the league&apos;s auto-sim clock · AI fixtures simulate up to Global Day {currentGameDay} · Play your own pending or upcoming CPU fixtures anytime without affecting other managers.
               </p>
             </div>
             <div className="flex items-center gap-4 border-b border-white/[0.08]">
@@ -1902,27 +1993,6 @@ export function MatchdayView({
             </div>
           </div>
 
-          {scheduleSyncStatus.pausedAiFixtures > 0 && scheduleSyncStatus.earliestHumanDay !== null && (
-            <div className="px-4 py-2.5 rounded bg-amber-500/10 border border-[#EAB308]/35 flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2 text-amber-200">
-                <Clock className="w-4 h-4 text-[#EAB308] shrink-0" />
-                <span>
-                  <strong className="text-white">Calendar Sync Guard:</strong>{' '}
-                  <span className="tabular-nums">{scheduleSyncStatus.pausedAiFixtures}</span> AI fixture(s) paused until Day{' '}
-                  <span className="tabular-nums">{scheduleSyncStatus.earliestHumanDay}</span> human match(es) complete or receive vote-sim majority.
-                </span>
-              </div>
-              {scheduleFilter !== 'all' && (
-                <button
-                  onClick={() => setScheduleFilter('all')}
-                  className="text-[11px] font-mono uppercase tracking-wider text-[#93E6EE] hover:text-white cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  View Due Matches →
-                </button>
-              )}
-            </div>
-          )}
-
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {visibleFixtures.map((fx) => {
               const home = teamById.get(fx.homeTeamId);
@@ -1932,6 +2002,8 @@ export function MatchdayView({
               const involvesMe = fx.homeTeamId === myTeam.id || fx.awayTeamId === myTeam.id;
               const matchRec = fx.matchId ? recentMatches.find((m) => m.id === fx.matchId) : null;
               const isDue = fx.scheduledDay <= currentGameDay;
+              const isAhead = fx.scheduledDay > currentGameDay;
+              const resolution = fx.resolutionType || matchRec?.resolutionType || 'manual';
               const skipVotes = Array.isArray(fx.skipVotesJson) ? fx.skipVotesJson : [];
               const iVotedSkip = Boolean(
                 myTeam.ownerUid && skipVotes.some((v) => v.uid === myTeam.ownerUid)
@@ -1955,11 +2027,16 @@ export function MatchdayView({
                       {isDue && fx.status !== 'completed' && (
                         <strong className="text-[#EAB308]">· DUE NOW</strong>
                       )}
+                      {isAhead && involvesMe && fx.status !== 'completed' && (
+                        <strong className="text-[#93E6EE]">· PLAY EARLY</strong>
+                      )}
                     </span>
                     <span
                       className={`uppercase font-bold ${
                         fx.status === 'completed'
-                          ? 'text-[#4ADE80]'
+                          ? resolution === 'auto_inactivity'
+                            ? 'text-[#EAB308]'
+                            : 'text-[#4ADE80]'
                           : fx.status === 'live'
                             ? 'text-[#EAB308]'
                             : isPvp
@@ -1968,7 +2045,11 @@ export function MatchdayView({
                       }`}
                     >
                       {fx.status === 'completed'
-                        ? 'COMPLETED'
+                        ? resolution === 'auto_inactivity'
+                          ? 'AUTO-SIM (INACTIVE)'
+                          : resolution === 'ai_vs_ai'
+                            ? 'AI VS AI'
+                            : 'PLAYED'
                         : fx.status === 'live'
                           ? 'LIVE PVP'
                           : isPvp
@@ -2878,6 +2959,8 @@ export function MatchdayView({
                       });
                       return;
                     }
+                    soundEngine.playConfirm();
+                    setCompareCenterMode('comparison');
                     setStage('compare');
                   }}
                   className="cm27-btn-3d w-full py-3 px-3 rounded font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer"
@@ -3146,24 +3229,24 @@ export function MatchdayView({
             </div>
           )}
 
-          {/* ================= STAGE 2: PRE-MATCH COMPARISON (Reference Image 2) ================= */}
+          {/* ================= STAGE 2: PRE-MATCH COMPARISON (Ref Images 2, 3 & 4) ================= */}
           {stage === 'compare' && (
             <div className="space-y-5">
-              {/* Header Banner matching Image 2 */}
-              <div className="cm27-panel bg-gradient-to-b from-[#171D26] to-[#0E1219] p-6 text-center space-y-4">
+              {/* Header Banner matching Ref Image 3 */}
+              <div className="cm27-panel bg-gradient-to-b from-[#171E28] to-[#0E131B] px-6 py-6 text-center space-y-5">
                 <div className="flex flex-col items-center gap-2">
                   <span
-                    className={`px-6 py-1.5 rounded border font-condensed text-2xl font-extrabold tracking-widest uppercase ${renderFormatBadgeClass()}`}
+                    className={`px-7 py-1.5 rounded-lg border font-condensed text-2xl font-extrabold tracking-widest uppercase shadow-md ${renderFormatBadgeClass()}`}
                   >
                     {getFormatDisplayLabel(format)}
                   </span>
-                  <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-300">
+                  <span className="text-[11px] font-mono uppercase tracking-[0.28em] text-slate-300">
                     {preview.competitionLabel}
                   </span>
                 </div>
 
-                <div className="flex flex-col md:flex-row items-center justify-center gap-6 md:gap-12 pt-1">
-                  <div className="flex items-center gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-5 pt-1">
+                  <div className="md:col-span-4 flex items-center justify-center md:justify-start gap-3.5">
                     <TeamCrest
                       templateKey={preview.homeTeam.templateKey}
                       shortCode={preview.homeTeam.shortCode}
@@ -3172,17 +3255,17 @@ export function MatchdayView({
                       size="md"
                     />
                     <div className="text-left">
-                      <div className="font-condensed text-2xl font-extrabold text-white uppercase">
+                      <div className="font-condensed text-2xl sm:text-3xl font-extrabold text-white uppercase leading-tight">
                         {preview.homeTeam.name}
                       </div>
-                      <div className="text-[11px] font-mono text-[#93E6EE] tabular-nums">
+                      <div className="text-[11px] font-mono text-[#93E6EE] tabular-nums mt-0.5">
                         XI Rating {liveHomeRatings.overall}
                       </div>
                     </div>
                   </div>
 
-                  <div className="text-center space-y-1">
-                    <div className="font-condensed text-2xl font-extrabold text-white uppercase tabular-nums">
+                  <div className="md:col-span-4 text-center space-y-1">
+                    <div className="font-condensed text-3xl font-extrabold text-white uppercase tabular-nums tracking-wide">
                       7:30 PM
                     </div>
                     <div className="text-xs text-slate-300">
@@ -3190,12 +3273,12 @@ export function MatchdayView({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="md:col-span-4 flex items-center justify-center md:justify-end gap-3.5">
                     <div className="text-right">
-                      <div className="font-condensed text-2xl font-extrabold text-white uppercase">
+                      <div className="font-condensed text-2xl sm:text-3xl font-extrabold text-white uppercase leading-tight">
                         {preview.awayTeam.name}
                       </div>
-                      <div className="text-[11px] font-mono text-rose-400 tabular-nums">
+                      <div className="text-[11px] font-mono text-rose-400 tabular-nums mt-0.5">
                         XI Rating {preview.awayRatings.overall}
                       </div>
                     </div>
@@ -3210,7 +3293,7 @@ export function MatchdayView({
                 </div>
               </div>
 
-              {/* 3-Column Comparison: Home XI | Center Spotlight + Team Bars | Opponent XI */}
+              {/* 3-Column Comparison: Home XI | Center Team Lineup Comparison (or Player Card on Click) | Opponent XI */}
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
                 {/* Left: Your XI */}
                 <div className="xl:col-span-4 cm27-panel p-4 space-y-2.5">
@@ -3220,7 +3303,7 @@ export function MatchdayView({
                         {preview.homeTeam.name}
                       </div>
                       <div className="text-[10px] font-mono text-[#93E6EE]">
-                        Selected 11/11 · Manage Lineup
+                        Selected 11/11 · Click player to inspect
                       </div>
                     </div>
                     <button
@@ -3232,12 +3315,16 @@ export function MatchdayView({
                   </div>
                   <div className="space-y-1">
                     {activeHomeXI.map((p, idx) => {
-                      const active = displayedPlayer?.id === p.id;
+                      const active =
+                        compareCenterMode === 'player' && displayedPlayer?.id === p.id;
                       const { label: ovrLabel, delta } = formatOvrWithDelta(p);
                       return (
                         <button
                           key={p.id}
-                          onClick={() => setSpotlightPlayer(p)}
+                          onClick={() => {
+                            setSpotlightPlayer(p);
+                            setCompareCenterMode('player');
+                          }}
                           className={`w-full px-2.5 py-1.5 rounded border grid grid-cols-12 items-center text-left text-xs cursor-pointer transition-colors ${
                             active
                               ? 'cm27-card-focus text-white'
@@ -3275,58 +3362,147 @@ export function MatchdayView({
                   </div>
                 </div>
 
-                {/* Center: Cyan Player Card + Comparison Bars */}
-                <div className="xl:col-span-4 space-y-4">
-                  {displayedPlayer && (
-                    <CyanPlayerCard
-                      player={displayedPlayer}
-                      compact
-                      isCaptain={captainId === displayedPlayer.id}
-                      isWicketkeeper={wicketkeeperId === displayedPlayer.id}
-                    />
-                  )}
-
-                  <div className="cm27-panel p-4 space-y-3">
-                    <div className="text-[10px] font-mono uppercase tracking-wider text-slate-400 text-center">
-                      LINEUP RATING COMPARISON
+                {/* Center: Default Team Lineup Comparison OR Player Card when player clicked */}
+                <div className="xl:col-span-4 space-y-3">
+                  {compareCenterMode === 'player' && displayedPlayer ? (
+                    <div className="space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => setCompareCenterMode('comparison')}
+                        className="cm27-btn-dark-3d w-full py-2 px-3 rounded text-xs font-semibold text-[#93E6EE] flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Back to Lineup Comparison</span>
+                      </button>
+                      <CyanPlayerCard
+                        player={displayedPlayer}
+                        compact
+                        isCaptain={captainId === displayedPlayer.id}
+                        isWicketkeeper={wicketkeeperId === displayedPlayer.id}
+                      />
                     </div>
-                    {[
-                      { label: 'BATTING', home: liveHomeRatings.bat, away: preview.awayRatings.bat },
-                      { label: 'BOWLING', home: liveHomeRatings.bowl, away: preview.awayRatings.bowl },
-                      { label: 'FIELDING', home: liveHomeRatings.field, away: preview.awayRatings.field },
-                      { label: 'XI OVERALL', home: liveHomeRatings.overall, away: preview.awayRatings.overall },
-                    ].map((row) => (
-                      <div key={row.label} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs font-mono tabular-nums">
-                          <span className="text-[#4ADE80] font-bold">{row.home}</span>
-                          <span className="text-[10px] text-slate-400">{row.label}</span>
-                          <span className="text-rose-400 font-bold">{row.away}</span>
+                  ) : (
+                    <div className="cm27-panel p-5 space-y-4">
+                      <div className="text-center border-b border-white/[0.07] pb-3 space-y-1">
+                        <div className="text-[10px] font-mono uppercase tracking-[0.22em] text-[#93E6EE]">
+                          PRE-MATCH TELEMETRY
                         </div>
-                        <div className="h-1.5 bg-[#070B0D] overflow-hidden flex">
-                          <div
-                            className="h-full bg-[#22C55E]"
-                            style={{
-                              width: `${Math.round((row.home / Math.max(1, row.home + row.away)) * 100)}%`,
-                            }}
-                          />
-                          <div
-                            className="h-full bg-[#EF4444]"
-                            style={{
-                              width: `${Math.round((row.away / Math.max(1, row.home + row.away)) * 100)}%`,
-                            }}
-                          />
+                        <h3 className="font-condensed text-2xl font-extrabold text-white uppercase tracking-wide">
+                          TEAM LINEUP COMPARISON
+                        </h3>
+                      </div>
+
+                      <div className="space-y-3">
+                        {[
+                          { label: 'BATTING', home: liveHomeRatings.bat, away: preview.awayRatings.bat },
+                          { label: 'BOWLING', home: liveHomeRatings.bowl, away: preview.awayRatings.bowl },
+                          { label: 'FIELDING', home: liveHomeRatings.field, away: preview.awayRatings.field },
+                          { label: 'XI OVERALL', home: liveHomeRatings.overall, away: preview.awayRatings.overall },
+                        ].map((row) => (
+                          <div key={row.label} className="space-y-1.5">
+                            <div className="flex items-center justify-between text-xs font-mono tabular-nums">
+                              <span className="text-[#4ADE80] font-bold">{row.home}</span>
+                              <span className="text-[10px] tracking-wider text-slate-300">
+                                {row.label}
+                              </span>
+                              <span className="text-rose-400 font-bold">{row.away}</span>
+                            </div>
+                            <div className="h-2 rounded-sm bg-[#070B0D] overflow-hidden flex">
+                              <div
+                                className="h-full bg-[#22C55E]"
+                                style={{
+                                  width: `${Math.round(
+                                    (row.home / Math.max(1, row.home + row.away)) * 100
+                                  )}%`,
+                                }}
+                              />
+                              <div
+                                className="h-full bg-[#EF4444]"
+                                style={{
+                                  width: `${Math.round(
+                                    (row.away / Math.max(1, row.home + row.away)) * 100
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* League Form Comparison */}
+                      <div className="pt-3 border-t border-white/[0.07] space-y-2">
+                        <div className="text-[10px] font-mono uppercase tracking-wider text-slate-400 text-center">
+                          LEAGUE FORM (LAST 5)
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-1">
+                            {(preview.homeForm || []).length === 0 ? (
+                              <span className="text-[11px] font-mono text-slate-500">—</span>
+                            ) : (
+                              (preview.homeForm || []).map((r, i) => (
+                                <span
+                                  key={i}
+                                  className={`w-5 h-5 rounded text-[10px] font-mono font-bold flex items-center justify-center ${
+                                    r === 'W'
+                                      ? 'bg-[#22C55E]/20 text-[#4ADE80] border border-[#22C55E]/45'
+                                      : r === 'L'
+                                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                        : 'bg-slate-600/25 text-slate-300 border border-white/15'
+                                  }`}
+                                >
+                                  {r}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-500">FORM</span>
+                          <div className="flex items-center gap-1 justify-end">
+                            {(preview.awayForm || []).length === 0 ? (
+                              <span className="text-[11px] font-mono text-slate-500">—</span>
+                            ) : (
+                              (preview.awayForm || []).map((r, i) => (
+                                <span
+                                  key={i}
+                                  className={`w-5 h-5 rounded text-[10px] font-mono font-bold flex items-center justify-center ${
+                                    r === 'W'
+                                      ? 'bg-[#22C55E]/20 text-[#4ADE80] border border-[#22C55E]/45'
+                                      : r === 'L'
+                                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                        : 'bg-slate-600/25 text-slate-300 border border-white/15'
+                                  }`}
+                                >
+                                  {r}
+                                </span>
+                              ))
+                            )}
+                          </div>
                         </div>
                       </div>
-                    ))}
 
-                    <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11px] font-mono text-slate-400 tabular-nums">
-                      <span className="text-[#4ADE80]">Win {liveWinChance.homePct}%</span>
-                      <span>
-                        {format === 'Test' ? 'Draw' : 'Tie'} {liveWinChance.tiePct}%
-                      </span>
-                      <span className="text-rose-400">Win {liveWinChance.awayPct}%</span>
+                      {/* Pitch Fit & Win Chance */}
+                      <div className="pt-3 border-t border-white/[0.07] space-y-2.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-mono uppercase text-slate-400">Pitch Fit</span>
+                          <span className="text-slate-200 text-right">{preview.pitchCondition}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] font-mono text-slate-300 tabular-nums pt-1">
+                          <span className="text-[#4ADE80] font-bold">
+                            {preview.homeTeam.shortCode} {liveWinChance.homePct}%
+                          </span>
+                          <span className="text-slate-400">
+                            {format === 'Test' ? 'Draw' : 'Tie'} {liveWinChance.tiePct}%
+                          </span>
+                          <span className="text-rose-400 font-bold">
+                            {preview.awayTeam.shortCode} {liveWinChance.awayPct}%
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400 text-center pt-1">
+                        Click any player in either XI to inspect their full player card
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
 
                 {/* Right: Opponent XI (view only) */}
@@ -3337,7 +3513,7 @@ export function MatchdayView({
                         {preview.awayTeam.name}
                       </div>
                       <div className="text-[10px] font-mono text-slate-400">
-                        Opponent XI · view only
+                        Opponent XI · click player to inspect
                       </div>
                     </div>
                     <span className="text-[11px] font-mono text-rose-300 tabular-nums">
@@ -3345,13 +3521,17 @@ export function MatchdayView({
                     </span>
                   </div>
                   <div className="space-y-1">
-                    {preview.awayXI.map((p, idx) => {
-                      const active = displayedPlayer?.id === p.id;
+                    {(preview.awayXI || []).map((p, idx) => {
+                      const active =
+                        compareCenterMode === 'player' && displayedPlayer?.id === p.id;
                       const { label: ovrLabel, delta } = formatOvrWithDelta(p);
                       return (
                         <button
                           key={p.id}
-                          onClick={() => setSpotlightPlayer(p)}
+                          onClick={() => {
+                            setSpotlightPlayer(p);
+                            setCompareCenterMode('player');
+                          }}
                           className={`w-full px-2.5 py-1.5 rounded border grid grid-cols-12 items-center text-left text-xs cursor-pointer transition-colors ${
                             active
                               ? 'bg-[#241217] border-rose-500/75 text-white'
@@ -3382,22 +3562,52 @@ export function MatchdayView({
                 </div>
               </div>
 
-              {/* Navigation Footer */}
-              <div className="flex items-center justify-between gap-3">
-                <button
-                  onClick={() => setStage('lineup')}
-                  className="cm27-btn-dark-3d px-4 py-2.5 rounded text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Back to Lineup</span>
-                </button>
-                <button
-                  onClick={enterTossStage}
-                  className="cm27-btn-3d px-10 py-3 rounded font-bold text-sm uppercase tracking-wider flex items-center gap-2 cursor-pointer"
-                >
-                  <span>Play Match</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
+              {/* Bottom Dual CTA Footer matching Ref Images 2 & 4 */}
+              <div className="pt-1 space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto">
+                  <button
+                    type="button"
+                    onClick={enterTossStage}
+                    className="cm27-btn-3d rounded-lg px-5 py-3.5 text-left cursor-pointer flex items-center justify-between gap-3"
+                  >
+                    <div>
+                      <div className="text-sm font-bold text-[#090C11]">Play Match</div>
+                      <div className="text-[11px] text-[#374151]">
+                        Live temperament desk
+                      </div>
+                    </div>
+                    <Play className="w-4 h-4 text-[#090C11] fill-current shrink-0" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleInstantCompareSimulate}
+                    disabled={simulatingInstantMatch || selectedOpponentIsHuman}
+                    className="cm27-btn-dark-3d rounded-lg px-5 py-3.5 text-left cursor-pointer flex items-center justify-between gap-3 disabled:opacity-50"
+                  >
+                    <div>
+                      <div className="text-sm font-bold text-white">
+                        {simulatingInstantMatch ? 'Simulating Match...' : 'Simulate Match'}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        {selectedOpponentIsHuman
+                          ? 'PvP: Enter Live Room'
+                          : 'Uses league form, team comparison & chance factors'}
+                      </div>
+                    </div>
+                    <FastForward className="w-4 h-4 text-[#93E6EE] shrink-0" />
+                  </button>
+                </div>
+
+                <div className="flex justify-start">
+                  <button
+                    onClick={() => setStage('lineup')}
+                    className="cm27-btn-dark-3d px-4 py-2 rounded text-xs font-semibold text-slate-200 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Back to Lineup</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -3521,9 +3731,8 @@ export function MatchdayView({
                   if (isPrimary) {
                     setTacticPreset(preset);
                     if (found) setStrategy(found.engineStrategy);
-                  } else {
+                  } else if (userIsBatting) {
                     setPartnerTacticPreset(preset);
-                    if (found && !userIsBatting) setStrategy(found.engineStrategy);
                   }
                 };
 
@@ -3994,26 +4203,35 @@ export function MatchdayView({
                                     ))}
                                   </div>
 
-                                  <div className="grid grid-cols-5 rounded overflow-hidden border border-white/[0.1] bg-[#0A0E14]">
-                                    {TACTIC_SEGMENTS.map((seg) => {
-                                      const active = partnerTacticPreset === seg.id;
-                                      return (
-                                        <button
-                                          key={seg.id}
-                                          onClick={() => applyTacticPreset(seg.id, false)}
-                                          className={`py-2 px-1 text-[11px] font-semibold cursor-pointer transition-colors whitespace-nowrap truncate ${
-                                            active
-                                              ? 'bg-[#E2E8F0] text-[#090D12]'
-                                              : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
-                                          }`}
-                                        >
-                                          {seg.id}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
+                                  {userIsBatting ? (
+                                    <>
+                                      <div className="grid grid-cols-5 rounded overflow-hidden border border-white/[0.1] bg-[#0A0E14]">
+                                        {TACTIC_SEGMENTS.map((seg) => {
+                                          const active = partnerTacticPreset === seg.id;
+                                          return (
+                                            <button
+                                              key={seg.id}
+                                              onClick={() => applyTacticPreset(seg.id, false)}
+                                              className={`py-2 px-1 text-[11px] font-semibold cursor-pointer transition-colors whitespace-nowrap truncate ${
+                                                active
+                                                  ? 'bg-[#E2E8F0] text-[#090D12]'
+                                                  : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                                              }`}
+                                            >
+                                              {seg.id}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
 
-                                  <div className="text-xs text-slate-400">{partnerHint}</div>
+                                      <div className="text-xs text-slate-400">{partnerHint}</div>
+                                    </>
+                                  ) : (
+                                    <div className="px-3 py-2 rounded border border-white/[0.08] bg-[#0A0E14] flex items-center justify-between text-[11px] font-mono text-slate-400">
+                                      <span>Opponent Batter · {preview.awayTeam.shortCode}</span>
+                                      <span className="text-slate-300 uppercase">CPU Controlled</span>
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })()}

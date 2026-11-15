@@ -1,10 +1,6 @@
-import fs from 'fs';
-import path from 'path';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-
-const firebaseConfigPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
 
 if (!getApps().length) {
   initializeApp({

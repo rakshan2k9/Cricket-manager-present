@@ -19,21 +19,26 @@ import { useAuth } from '../context/AuthContext';
 import { apiFetch } from '../lib/api';
 import type { CurrencyCode, LeagueStateSnapshot, ManagerProfile, Player } from '../types/game';
 import {
+  AUTO_SIM_INTERVAL_OPTIONS,
   AVATAR_PRESETS,
   COACH_BACKGROUNDS,
   COACH_EXPERIENCES,
   COACHING_STYLES,
   COUNTRIES,
   CURRENCIES,
+  DEFAULT_AUTO_SIM_INTERVAL_SEC,
+  formatAutoSimIntervalLabel,
   MONTHS,
 } from '../utils/format';
 import { CountryFlag } from '../components/CountryFlag';
 import { ManagerBadge } from '../components/ManagerBadge';
 import { OfficeHubPanel } from '../components/OfficeHubPanel';
+import { GameSettingsPanel } from '../components/GameSettingsPanel';
 import type { ActiveTab } from '../components/AppShell';
 
 export function ProfileSettingsView({
   leagueState,
+  initialSection,
   onLeaveLeagueSuccess,
   onRefreshState,
   onOpenAuction,
@@ -43,6 +48,7 @@ export function ProfileSettingsView({
   onBackToLobby,
 }: {
   leagueState?: LeagueStateSnapshot | null;
+  initialSection?: 'hub' | 'settings' | 'gameSettings';
   onLeaveLeagueSuccess?: () => void;
   onRefreshState?: () => Promise<void>;
   onOpenAuction?: () => void;
@@ -52,9 +58,15 @@ export function ProfileSettingsView({
   onBackToLobby?: () => void;
 }) {
   const { user, profile, setProfile, signOut } = useAuth();
-  const [officeSection, setOfficeSection] = useState<'hub' | 'settings'>(
-    leagueState ? 'hub' : 'settings'
+  const [officeSection, setOfficeSection] = useState<'hub' | 'settings' | 'gameSettings'>(
+    initialSection || (leagueState ? 'hub' : 'settings')
   );
+
+  useEffect(() => {
+    if (initialSection) {
+      setOfficeSection(initialSection);
+    }
+  }, [initialSection]);
   const [topPlayers, setTopPlayers] = useState<Player[]>([]);
 
   useEffect(() => {
@@ -107,6 +119,60 @@ export function ProfileSettingsView({
       (leagueState.league.myRole === 'host' || leagueState.league.hostUid === user?.uid)
   );
   const auctionStatus = leagueState?.auctionSnapshot?.auction.status;
+
+  const [leagueAutoSimSec, setLeagueAutoSimSec] = useState<number>(
+    leagueState?.league.dayDurationSec || DEFAULT_AUTO_SIM_INTERVAL_SEC
+  );
+  const [inactivitySimEnabled, setInactivitySimEnabled] = useState<boolean>(
+    Boolean(leagueState?.league.inactivitySimEnabled ?? leagueState?.inactivitySimEnabled)
+  );
+  const [inactivityTimeoutSec, setInactivityTimeoutSec] = useState<number>(
+    leagueState?.league.inactivityTimeoutSec ?? leagueState?.inactivityTimeoutSec ?? 86400
+  );
+  const [savingLeagueSettings, setSavingLeagueSettings] = useState(false);
+
+  useEffect(() => {
+    if (!leagueState) return;
+    setLeagueAutoSimSec(leagueState.league.dayDurationSec || DEFAULT_AUTO_SIM_INTERVAL_SEC);
+    setInactivitySimEnabled(
+      Boolean(leagueState.league.inactivitySimEnabled ?? leagueState.inactivitySimEnabled)
+    );
+    setInactivityTimeoutSec(
+      leagueState.league.inactivityTimeoutSec ?? leagueState.inactivityTimeoutSec ?? 86400
+    );
+  }, [
+    leagueState?.league.id,
+    leagueState?.league.dayDurationSec,
+    leagueState?.league.inactivitySimEnabled,
+    leagueState?.league.inactivityTimeoutSec,
+  ]);
+
+  const handleSaveLeagueAutoSim = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!leagueState || !isHost) return;
+    setSavingLeagueSettings(true);
+    try {
+      await apiFetch(`/api/leagues/${leagueState.league.id}/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          autoSimIntervalSec: leagueAutoSimSec,
+          dayDurationSec: leagueAutoSimSec,
+          inactivitySimEnabled,
+          inactivityTimeoutSec,
+        }),
+      });
+      await onRefreshState?.();
+      onToast({
+        tone: 'success',
+        title: 'Auto-Simulation Settings Updated',
+        body: `Global calendar interval set to ${formatAutoSimIntervalLabel(leagueAutoSimSec)}. Current league date & manager progress preserved.`,
+      });
+    } catch (err: any) {
+      onToast({ tone: 'error', title: 'Could Not Update League Settings', body: err.message });
+    } finally {
+      setSavingLeagueSettings(false);
+    }
+  };
 
   const displayPreview =
     preferredName.trim() ||
@@ -204,10 +270,16 @@ export function ProfileSettingsView({
   };
 
   return (
-    <div className={leagueState && officeSection === 'hub' ? 'space-y-6' : 'max-w-4xl space-y-6'}>
-      {leagueState && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] pb-3">
-          <div className="inline-flex items-center gap-1 p-1 rounded bg-[#0C1016] border border-white/[0.08]">
+    <div
+      className={
+        officeSection === 'hub' || officeSection === 'gameSettings'
+          ? 'space-y-6'
+          : 'max-w-4xl space-y-6'
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] pb-3">
+        <div className="inline-flex items-center gap-1 p-1 rounded bg-[#0C1016] border border-white/[0.08]">
+          {leagueState && (
             <button
               type="button"
               onClick={() => setOfficeSection('hub')}
@@ -217,31 +289,44 @@ export function ProfileSettingsView({
             >
               Office Hub
             </button>
-            <button
-              type="button"
-              onClick={() => setOfficeSection('settings')}
-              className={`px-4 py-1.5 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
-                officeSection === 'settings'
-                  ? 'cm27-btn-3d font-bold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Manager Settings &amp; League
-            </button>
-          </div>
-          {onBackToLobby && (
-            <button
-              onClick={onBackToLobby}
-              className="cm27-btn-dark-3d flex items-center gap-1.5 px-4 py-2 rounded text-xs text-slate-200 hover:text-white cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Back
-            </button>
           )}
+          <button
+            type="button"
+            onClick={() => setOfficeSection('gameSettings')}
+            className={`px-4 py-1.5 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              officeSection === 'gameSettings'
+                ? 'cm27-btn-3d font-bold'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Game Settings
+          </button>
+          <button
+            type="button"
+            onClick={() => setOfficeSection('settings')}
+            className={`px-4 py-1.5 rounded text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              officeSection === 'settings'
+                ? 'cm27-btn-3d font-bold'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Manager &amp; League
+          </button>
         </div>
-      )}
+        {onBackToLobby && (
+          <button
+            onClick={onBackToLobby}
+            className="cm27-btn-dark-3d flex items-center gap-1.5 px-4 py-2 rounded text-xs text-slate-200 hover:text-white cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </button>
+        )}
+      </div>
 
-      {leagueState && officeSection === 'hub' ? (
+      {officeSection === 'gameSettings' ? (
+        <GameSettingsPanel />
+      ) : leagueState && officeSection === 'hub' ? (
         <OfficeHubPanel
           leagueState={leagueState}
           profile={profile}
@@ -610,6 +695,116 @@ export function ProfileSettingsView({
           </button>
         </div>
       </form>
+
+      {/* League Auto-Simulation Settings */}
+      {leagueState && (
+        <form onSubmit={handleSaveLeagueAutoSim} className="cm27-panel p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#93E6EE] font-bold">
+                LEAGUE SETTINGS · AUTO-SIMULATION SETTINGS
+              </div>
+              <h2 className="text-base font-semibold text-white mt-0.5">
+                Real-World Auto-Simulation Interval
+              </h2>
+              <p className="text-xs text-slate-400">
+                Server advances the Global League Day automatically on this schedule. Updating applies to future cycles without resetting the league date, completed matches, or individual manager progress.
+              </p>
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded text-[10px] font-mono uppercase tracking-wider border ${
+                isHost
+                  ? 'bg-[#93E6EE]/10 border-[#93E6EE]/35 text-[#93E6EE]'
+                  : 'bg-white/[0.04] border-white/15 text-slate-400'
+              }`}
+            >
+              {isHost ? 'Host Control' : 'Host-Only Setting'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label
+                htmlFor="league-settings-autosim-interval"
+                className="block text-xs font-medium text-slate-300 mb-1.5"
+              >
+                Real-World Auto-Simulation Interval
+              </label>
+              <select
+                id="league-settings-autosim-interval"
+                value={leagueAutoSimSec}
+                disabled={!isHost || savingLeagueSettings}
+                onChange={(e) => setLeagueAutoSimSec(Number(e.target.value))}
+                className="w-full px-3.5 py-2.5 rounded bg-[#0C0F14] border border-white/15 text-sm text-white focus:outline-none focus:border-[#93E6EE] disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {AUTO_SIM_INTERVAL_OPTIONS.map((opt) => (
+                  <option key={opt.seconds} value={opt.seconds} className="bg-[#12161E]">
+                    {opt.label}{opt.seconds === DEFAULT_AUTO_SIM_INTERVAL_SEC ? ' (Default)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="cm27-panel-inset p-3.5 space-y-2.5 rounded">
+              <label className="flex items-start justify-between gap-3 cursor-pointer">
+                <div>
+                  <div className="text-xs font-semibold text-white">
+                    Abandoned Fixture Inactivity Auto-Sim
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Optional rule: auto-simulate human fixtures only after extended inactivity. When off, missed human fixtures stay pending without stalling the league.
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={inactivitySimEnabled}
+                  disabled={!isHost || savingLeagueSettings}
+                  onChange={(e) => setInactivitySimEnabled(e.target.checked)}
+                  className="w-4 h-4 accent-[#93E6EE] mt-0.5 disabled:opacity-60"
+                />
+              </label>
+              {inactivitySimEnabled && (
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.06]">
+                  <span className="text-[11px] text-slate-400">Inactivity Window</span>
+                  <select
+                    value={inactivityTimeoutSec}
+                    disabled={!isHost || savingLeagueSettings}
+                    onChange={(e) => setInactivityTimeoutSec(Number(e.target.value))}
+                    className="px-2.5 py-1 rounded bg-[#0C0F14] border border-white/15 text-xs text-white focus:outline-none focus:border-[#93E6EE] disabled:opacity-60"
+                  >
+                    <option value={86400}>24 hours</option>
+                    <option value={172800}>48 hours</option>
+                    <option value={259200}>72 hours</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-white/[0.06]">
+            <span className="text-xs text-slate-400 tabular-nums">
+              Active Global Day:{' '}
+              <strong className="text-white">
+                Day {leagueState.currentGameDay || leagueState.league.currentGameDay || 1}
+              </strong>{' '}
+              · Current Cycle:{' '}
+              <strong className="text-[#93E6EE]">
+                {formatAutoSimIntervalLabel(leagueState.league.dayDurationSec)}
+              </strong>
+            </span>
+            {isHost && (
+              <button
+                type="submit"
+                disabled={savingLeagueSettings}
+                className="cm27-btn-3d flex items-center gap-2 px-5 py-2 rounded font-bold text-xs cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {savingLeagueSettings ? 'Applying...' : 'Save Auto-Sim Settings'}
+              </button>
+            )}
+          </div>
+        </form>
+      )}
 
       {/* League & Session Actions */}
       <div className="cm27-panel p-6 space-y-4">

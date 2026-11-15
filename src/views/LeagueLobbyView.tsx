@@ -24,6 +24,8 @@ import { useAuth } from '../context/AuthContext';
 import { apiFetch } from '../lib/api';
 import type { League } from '../types/game';
 import {
+  AUTO_SIM_INTERVAL_OPTIONS,
+  DEFAULT_AUTO_SIM_INTERVAL_SEC,
   formatCurrencyLakhs,
   getCompetitionDisplayLabel,
   LEAGUE_COMPETITION_OPTIONS,
@@ -84,6 +86,7 @@ export function LeagueLobbyView({
   const [defaultBasePrice, setDefaultBasePrice] = useState(50);
   const [bidIncrement, setBidIncrement] = useState(25);
   const [auctionDurationSec, setAuctionDurationSec] = useState(20);
+  const [autoSimIntervalSec, setAutoSimIntervalSec] = useState<number>(DEFAULT_AUTO_SIM_INTERVAL_SEC);
   const [allowCustomTeams, setAllowCustomTeams] = useState(true);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -173,6 +176,8 @@ export function LeagueLobbyView({
           defaultBasePrice,
           bidIncrement,
           auctionDurationSec,
+          autoSimIntervalSec,
+          dayDurationSec: autoSimIntervalSec,
         }),
       });
       setShowCreateModal(false);
@@ -1117,6 +1122,40 @@ export function LeagueLobbyView({
                     Allow managers to create custom clubs
                   </span>
                 </label>
+              </div>
+
+              {/* AUTO-SIMULATION SETTINGS */}
+              <div className="cm27-panel-inset p-4 space-y-3 border border-[#93E6EE]/20 rounded">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#93E6EE] font-bold">
+                      AUTO-SIMULATION SETTINGS
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Controls how frequently the server advances the Global League Day by 1 in-game day for AI fixtures and calendar progression.
+                    </p>
+                  </div>
+                </div>
+                <div>
+                  <label
+                    htmlFor="create-league-autosim-interval"
+                    className="block text-xs font-medium text-slate-200 mb-1.5"
+                  >
+                    Real-World Auto-Simulation Interval
+                  </label>
+                  <select
+                    id="create-league-autosim-interval"
+                    value={autoSimIntervalSec}
+                    onChange={(e) => setAutoSimIntervalSec(Number(e.target.value))}
+                    className="w-full px-3.5 py-2.5 rounded bg-[#0C0F14] border border-white/15 text-sm text-white focus:outline-none focus:border-[#93E6EE]"
+                  >
+                    {AUTO_SIM_INTERVAL_OPTIONS.map((opt) => (
+                      <option key={opt.seconds} value={opt.seconds} className="bg-[#12161E]">
+                        {opt.label}{opt.seconds === DEFAULT_AUTO_SIM_INTERVAL_SEC ? ' (Default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/[0.08]">

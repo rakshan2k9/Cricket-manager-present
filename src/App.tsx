@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SettingsProvider } from './context/SettingsContext';
 import { useLeagueRealtime } from './hooks/useLeagueRealtime';
 import { useGlobalSocial } from './hooks/useGlobalSocial';
 import { apiFetch } from './lib/api';
@@ -36,6 +37,7 @@ function CricketManagerApp() {
   const [activeLeagueId, setActiveLeagueId] = useState<number | null>(autostartDemo ? 1 : null);
   const [entryScreen, setEntryScreen] = useState<'title' | 'lobby' | 'friends' | 'settings'>('title');
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const [settingsInitialSection, setSettingsInitialSection] = useState<'hub' | 'settings' | 'gameSettings'>('hub');
   const [inspectTeamId, setInspectTeamId] = useState<number | null>(null);
   const [userLeagues, setUserLeagues] = useState<League[]>([]);
 
@@ -216,7 +218,12 @@ function CricketManagerApp() {
         activeTab={activeTab}
         onSelectTab={(tab) => {
           if (tab !== 'squad') setInspectTeamId(null);
+          if (tab === 'settings') setSettingsInitialSection('hub');
           setActiveTab(tab);
+        }}
+        onOpenGameSettings={() => {
+          setSettingsInitialSection('gameSettings');
+          setActiveTab('settings');
         }}
         onBackToLobby={() => {
           setActiveLeagueId(null);
@@ -337,6 +344,7 @@ function CricketManagerApp() {
         {activeTab === 'settings' && (
           <ProfileSettingsView
             leagueState={state}
+            initialSection={settingsInitialSection}
             onNavigate={setActiveTab}
             onInspectTeam={handleInspectTeam}
             onRefreshState={refreshState}
@@ -358,7 +366,9 @@ function CricketManagerApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <CricketManagerApp />
+      <SettingsProvider>
+        <CricketManagerApp />
+      </SettingsProvider>
     </AuthProvider>
   );
 }

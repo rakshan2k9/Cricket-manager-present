@@ -181,30 +181,49 @@ export function calculatePlayerMarketValuation(
   };
 }
 
-function getAiTeamTargets(
+export function getAiTeamTargets(
   leagueId: number,
   teamId: number,
   isHuman: boolean,
   requiredMinSquad: number,
   effectiveMaxSquad: number,
-  budgetScale: number
+  budgetScale: number,
+  stopBuyingInAutoSim = false,
+  currentSquadCount = 0
 ) {
   const minSquad = Math.max(22, requiredMinSquad);
   const maxSquad = Math.max(minSquad, Math.min(25, effectiveMaxSquad));
   if (isHuman) {
     return {
-      targetSquadSize: minSquad,
+      targetSquadSize:
+        stopBuyingInAutoSim && currentSquadCount >= minSquad ? currentSquadCount : minSquad,
       carryOverReserve: Math.round(150 * budgetScale),
     };
   }
   const span = Math.max(0, maxSquad - minSquad);
   const targetSquadSize =
     minSquad + Math.min(span, Math.floor(deterministicHash(leagueId * 53, teamId * 29) * (span + 1)));
-  // Realistic carry-over purse between ₹1.5 Cr (150L) and ₹4.5 Cr (450L)
+  // Realistic carry-over purse (6%-15% of starting budget: ₹6 Cr - ₹15 Cr on ₹100 Cr purse) for coaches, scouts & next auction
   const carryOverReserve = Math.round(
-    (150 + deterministicHash(teamId * 71, leagueId * 37) * 300) * budgetScale
+    (600 + deterministicHash(teamId * 71, leagueId * 37) * 900) * budgetScale
   );
   return { targetSquadSize, carryOverReserve };
+}
+
+export function shouldSkipLotForTeam(params: {
+  squadCount: number;
+  targetSquadSize: number;
+  requiredMinSquad: number;
+  stopBuyingInAutoSim: boolean;
+  isOverseasLot: boolean;
+  overseasCount: number;
+  maxOverseas: number;
+}): boolean {
+  const minFloor = Math.max(22, params.requiredMinSquad);
+  if (params.stopBuyingInAutoSim && params.squadCount >= minFloor) return true;
+  if (params.squadCount >= params.targetSquadSize) return true;
+  if (params.isOverseasLot && params.overseasCount >= params.maxOverseas) return true;
+  return false;
 }
 
 export async function getAuctionSnapshot(leagueId: number) {
@@ -364,11 +383,14 @@ export async function enforceMinimumSquadCompletion(
       Boolean(t.ownerUid),
       requiredMinSquad,
       effectiveMaxSquad,
-      budgetScale
+      budgetScale,
+      Boolean(t.stopBuyingInAutoSim),
+      tContracts.length
     );
     return {
       team: t,
       isHuman: Boolean(t.ownerUid),
+      stopBuyingInAutoSim: Boolean(t.stopBuyingInAutoSim),
       targetSquadSize,
       carryOverReserve,
       remainingBudget: t.remainingBudget,
@@ -841,9 +863,16 @@ export async function settleLotAtomic(auctionId: number, forceSettle = false) {
 
         nextStatus = 'completed';
         nextSetName = 'Completed';
+        const intervalSec = Math.max(60, league.dayDurationSec || 600);
         await tx
           .update(leagues)
-          .set({ status: 'active' })
+          .set({
+            status: 'active',
+            seasonStartedAt: now,
+            currentGameDay: 1,
+            dayStartedAt: now,
+            nextAutoSimAt: new Date(now.getTime() + intervalSec * 1000),
+          })
           .where(eq(leagues.id, league.id));
       }
     }
@@ -1231,7 +1260,17 @@ export async function resolveSkippedLotWithValuation(auctionId: number) {
         completionSystemMsg = compRes.systemMsg;
         nextStatus = 'completed';
         nextSetName = 'Completed';
-        await tx.update(leagues).set({ status: 'active' }).where(eq(leagues.id, league.id));
+        const intervalSec = Math.max(60, league.dayDurationSec || 600);
+        await tx
+          .update(leagues)
+          .set({
+            status: 'active',
+            seasonStartedAt: now,
+            currentGameDay: 1,
+            dayStartedAt: now,
+            nextAutoSimAt: new Date(now.getTime() + intervalSec * 1000),
+          })
+          .where(eq(leagues.id, league.id));
       }
     }
 
@@ -1384,11 +1423,14 @@ export async function autoSimulateFullAuction(leagueId: number) {
         Boolean(t.ownerUid),
         requiredMinSquad,
         effectiveMaxSquad,
-        budgetScale
+        budgetScale,
+        Boolean(t.stopBuyingInAutoSim),
+        tContracts.length
       );
       return {
         team: t,
         isHuman: Boolean(t.ownerUid),
+        stopBuyingInAutoSim: Boolean(t.stopBuyingInAutoSim),
         targetSquadSize,
         carryOverReserve,
         bookmarks: new Set<number>(
@@ -1446,8 +1488,19 @@ export async function autoSimulateFullAuction(leagueId: number) {
       }> = [];
 
       for (const ts of teamStates) {
-        if (ts.squadCount >= ts.targetSquadSize) continue;
-        if (player.isOverseas && ts.overseasCount >= league.maxOverseas) continue;
+        if (
+          shouldSkipLotForTeam({
+            squadCount: ts.squadCount,
+            targetSquadSize: ts.targetSquadSize,
+            requiredMinSquad,
+            stopBuyingInAutoSim: ts.stopBuyingInAutoSim,
+            isOverseasLot: player.isOverseas,
+            overseasCount: ts.overseasCount,
+            maxOverseas: league.maxOverseas,
+          })
+        ) {
+          continue;
+        }
 
         const slotsNeededAfterThis = Math.max(0, requiredMinSquad - ts.squadCount - 1);
         const reserveFloor = ts.isHuman
@@ -1687,7 +1740,17 @@ export async function autoSimulateFullAuction(leagueId: number) {
       })
       .where(eq(auctions.id, auctionRow.id));
 
-    await tx.update(leagues).set({ status: 'active' }).where(eq(leagues.id, leagueId));
+    const intervalSec = Math.max(60, league.dayDurationSec || 600);
+    await tx
+      .update(leagues)
+      .set({
+        status: 'active',
+        seasonStartedAt: now,
+        currentGameDay: 1,
+        dayStartedAt: now,
+        nextAutoSimAt: new Date(now.getTime() + intervalSec * 1000),
+      })
+      .where(eq(leagues.id, leagueId));
 
     return {
       alreadyCompleted: false,
